@@ -28,7 +28,6 @@
         "groups": [
           {
             "group": "Get started",
-            "icon": "rocket",
             "pages": [
               "index",
               "quickstart",
@@ -37,7 +36,6 @@
           },
           {
             "group": "Core concepts",
-            "icon": "shapes",
             "pages": [
               "concepts/networks",
               "concepts/identity",
@@ -48,7 +46,6 @@
           },
           {
             "group": "OCPP integration",
-            "icon": "plug-zap",
             "pages": [
               "ocpp/overview",
               "ocpp/go",
@@ -58,7 +55,6 @@
           },
           {
             "group": "OCPI integration",
-            "icon": "network",
             "pages": [
               "ocpi/overview",
               "ocpi/go",
@@ -68,7 +64,6 @@
           },
           {
             "group": "Run in production",
-            "icon": "settings",
             "pages": [
               "operate/configuration",
               "operate/delivery",
@@ -103,18 +98,15 @@
       "anchors": [
         {
           "anchor": "Dashboard",
-          "href": "https://app.evpanda.io",
-          "icon": "layout-dashboard"
+          "href": "https://app.evpanda.io"
         },
         {
           "anchor": "GitHub",
-          "href": "https://github.com/evpanda-labs",
-          "icon": "github"
+          "href": "https://github.com/evpanda-labs"
         },
         {
           "anchor": "Support",
-          "href": "mailto:support@evpanda.io",
-          "icon": "life-buoy"
+          "href": "mailto:support@evpanda.io"
         }
       ]
     }
