@@ -1,0 +1,282 @@
+---
+title: "Ingestion API"
+description: "The HTTP contract the SDKs speak. Use it directly when you need a language EVPanda doesn't ship an SDK for."
+icon: "webhook"
+---
+
+The ingestion API is the only endpoint the SDKs talk to. It is small on purpose — two routes, one auth header, one response shape — so implementing a client for a language without an SDK is a day of work, not a project.
+
+<Note>
+  If an SDK exists for your stack, use it. It handles buffering, batching, compression, retries, redaction, and identity validation — all of which you would otherwise write yourself, on your production hot path.
+</Note>
+
+## Base URL
+
+```bash
+https://ingest.evpanda.io
+```
+
+## Authentication
+
+Every request carries your network's API key in the `X-API-Key` header.
+
+```bash
+X-API-Key: evp_sk_...
+```
+
+Keys are scoped to one network and one protocol. An OCPP key on `/v1/ocpi` is rejected with `401`, and vice versa. See [Networks and API keys](/concepts/networks#api-keys).
+
+## Compression
+
+Send the body uncompressed, or compressed with `gzip` or `zstd` declared in `Content-Encoding`. Any other value is rejected with `400`.
+
+| Limit | Value | Exceeded |
+| --- | --- | --- |
+| Compressed body | 5 MB | `413` |
+| Decompressed body | 20 MB | `413` |
+| Messages per batch | 1,000 | `400` |
+
+## `POST /v1/ocpp`
+
+Ingest a batch of OCPP frames and socket events.
+
+```json Request
+{
+  "messages": [
+    {
+      "captured_at": "2026-08-27T12:34:56.789Z",
+      "charger_id": "CP-001",
+      "connection_id": "0f9c2b1e-6d4a-4a7f-9c1e-2b8d5a3f0e11",
+      "tenant_id": "cpo-42",
+      "tenant_name": "Acme Energy",
+      "event_type": 2,
+      "direction": "FROM_CP",
+      "raw_frame": "WzIsIjE5IiwiSGVhcnRiZWF0Iix7fV0="
+    }
+  ]
+}
+```
+
+### Fields
+
+<ResponseField name="captured_at" type="string" required>
+  RFC 3339 timestamp of the moment of capture. Normalized server-side to UTC at millisecond precision.
+</ResponseField>
+
+<ResponseField name="charger_id" type="string" required>
+  Your charge point identifier. Maximum 64 characters.
+</ResponseField>
+
+<ResponseField name="connection_id" type="string" required>
+  Stable for one WebSocket connection, fresh on every reconnect. Maximum 64 characters.
+</ResponseField>
+
+<ResponseField name="tenant_id" type="string" required>
+  Tenant identifier. Maximum 64 characters.
+</ResponseField>
+
+<ResponseField name="tenant_name" type="string" required>
+  Human-readable tenant name. Maximum 32 characters.
+</ResponseField>
+
+<ResponseField name="event_type" type="integer" required>
+  `0` = DISCONNECT, `1` = CONNECT, `2` = MESSAGE.
+</ResponseField>
+
+<ResponseField name="direction" type="string">
+  `TO_CP` or `FROM_CP`. Required when `event_type` is `2`; send `null` otherwise.
+</ResponseField>
+
+<ResponseField name="raw_frame" type="string">
+  The OCPP wire frame, **base64-encoded** UTF-8. Required when `event_type` is `2`; send `null` otherwise. Malformed base64 rejects the message.
+</ResponseField>
+
+<Warning>
+  **The tenant pair is currently required on OCPP messages.** The SDKs treat `tenant_id` and `tenant_name` as optional, but the ingestion API rejects an OCPP message that omits either — the batch still returns `200`, and the message is counted in `failed`.
+
+  If you run a single-tenant CSMS, send a constant pair (for example your own operator name) so nothing is silently dropped.
+</Warning>
+
+## `POST /v1/ocpi`
+
+Ingest a batch of OCPI HTTP exchanges.
+
+```json Request
+{
+  "messages": [
+    {
+      "captured_at": "2026-08-27T12:34:56.789Z",
+      "platform_id": "acme",
+      "platform_name": "Acme Mobility",
+      "tenant_id": null,
+      "tenant_name": null,
+      "direction": "IN",
+      "http_method": "POST",
+      "url": "/ocpi/2.2/cdrs",
+      "response_status_code": 201,
+      "request_headers": { "content-type": "application/json" },
+      "request_body": "eyJpZCI6ImNkci0xIn0=",
+      "response_headers": { "content-type": "application/json" },
+      "response_body": "eyJzdGF0dXNfY29kZSI6MTAwMH0="
+    }
+  ]
+}
+```
+
+### Fields
+
+<ResponseField name="captured_at" type="string" required>
+  RFC 3339 timestamp of the moment of capture.
+</ResponseField>
+
+<ResponseField name="platform_id" type="string" required>
+  The roaming partner's identifier — never your own platform. Maximum 64 characters.
+</ResponseField>
+
+<ResponseField name="platform_name" type="string" required>
+  The partner's display name. Maximum 64 characters.
+</ResponseField>
+
+<ResponseField name="tenant_id" type="string">
+  Optional, but all-or-nothing with `tenant_name`. Maximum 64 characters.
+</ResponseField>
+
+<ResponseField name="tenant_name" type="string">
+  Optional, but all-or-nothing with `tenant_id`. Maximum 32 characters.
+</ResponseField>
+
+<ResponseField name="direction" type="string" required>
+  `IN` for traffic you received, `OUT` for traffic you sent.
+</ResponseField>
+
+<ResponseField name="http_method" type="string" required>
+  One of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`.
+</ResponseField>
+
+<ResponseField name="url" type="string" required>
+  The URL as your service saw it.
+</ResponseField>
+
+<ResponseField name="response_status_code" type="integer" required>
+  Must be between 100 and 599. An exchange with no response is rejected — see the warning below.
+</ResponseField>
+
+<ResponseField name="request_headers" type="object">
+  Free-form JSON object of header name/value pairs, or `null`. Strip secrets before sending: the API stores what it is given.
+</ResponseField>
+
+<ResponseField name="response_headers" type="object">
+  The same, for the response.
+</ResponseField>
+
+<ResponseField name="request_body" type="string">
+  The request body, **base64-encoded**, or `null`. This is what all three SDKs send.
+</ResponseField>
+
+<ResponseField name="response_body" type="string">
+  The same, for the response body.
+</ResponseField>
+
+<Warning>
+  **`response_status_code` has no null form.** A value outside 100–599 — including a missing one — rejects the message. If you capture an exchange that never produced a response, either skip it or record the status your service ultimately returned.
+</Warning>
+
+## Responses
+
+Every response is exactly one of two shapes.
+
+<CodeGroup>
+  ```json 200 — success or partial success
+  { "captured": 998, "failed": 2 }
+  ```
+
+  ```json Any non-2xx
+  { "error": "invalid API key" }
+  ```
+</CodeGroup>
+
+| Status | Meaning | Retry? |
+| --- | --- | --- |
+| `200` | Batch processed. `captured` rows persisted, `failed` rejected by per-message validation | No |
+| `400` | Malformed request — invalid JSON, empty `messages`, over 1,000 messages, unsupported `Content-Encoding`, undecompressable body | **Never** |
+| `401` | Missing or invalid `X-API-Key` | **Never** |
+| `413` | Compressed body over 5 MB, or decompressed over 20 MB | **Never** |
+| `500` | Unexpected server error | Yes, with backoff |
+
+<Warning>
+  A batch where **every** message fails validation still returns `200` with `"captured": 0`. This is deliberate: a permanently bad batch must not look retryable, or a client bug turns into a retry storm against the production ingestion path.
+</Warning>
+
+There is no per-message error detail in the response. Per-message validation failures are logged server-side only, so a consistently non-zero `failed` count is something to debug against these field rules, not against the response body.
+
+## `GET /health`
+
+Unauthenticated liveness probe. Useful for confirming egress from a host.
+
+```bash
+curl -sS https://ingest.evpanda.io/health
+# {"status":"ok"}
+```
+
+It does not probe storage or the message bus — a `200` means the API is up, not that the whole pipeline is.
+
+## Field limits
+
+| Field | Maximum |
+| --- | --- |
+| `charger_id`, `connection_id`, `platform_id`, `platform_name`, `tenant_id` | 64 characters |
+| `tenant_name` | 32 characters |
+| Messages per batch | 1,000 |
+| Compressed body | 5 MB |
+| Decompressed body | 20 MB |
+
+## A minimal client
+
+If you're implementing your own, these are the behaviors that make an SDK safe on a production hot path. Copy them.
+
+<AccordionGroup>
+  <Accordion title="Never block the caller" icon="gauge">
+    Capture writes to an in-memory queue and returns. Delivery happens on a background worker or task. If you cannot do that, do not instrument your hot path.
+  </Accordion>
+
+  <Accordion title="Bound your memory" icon="database">
+    Give the queue a hard ceiling and drop your own oldest entries when it's reached. Unbounded buffering turns an EVPanda outage into your outage.
+  </Accordion>
+
+  <Accordion title="Batch, and cap the batch at 1,000" icon="package">
+    Flush on a full batch or a timer, whichever comes first. Compress with gzip or zstd above about 1 KB.
+  </Accordion>
+
+  <Accordion title="Retry only what is retryable" icon="rotate-cw">
+    `5xx` and network errors retry with jittered exponential backoff — five attempts is plenty. `400`, `401`, and `413` are permanent: drop the batch and log it, never retry.
+  </Accordion>
+
+  <Accordion title="Redact before you buffer" icon="lock">
+    Filter headers to an allowlist and mask `/credentials` tokens at capture, not at send. Once a secret is in a buffer, it is in a crash dump.
+  </Accordion>
+
+  <Accordion title="Count what you drop" icon="list-checks">
+    Identity failures, oversize messages, evictions, undeliverable batches. Without counters, a broken integration is indistinguishable from an idle one.
+  </Accordion>
+</AccordionGroup>
+
+## Example
+
+```bash
+curl -sS https://ingest.evpanda.io/v1/ocpp \
+  -H "X-API-Key: $EVPANDA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{
+      "captured_at": "2026-08-27T12:34:56.789Z",
+      "charger_id": "CP-001",
+      "connection_id": "0f9c2b1e-6d4a-4a7f-9c1e-2b8d5a3f0e11",
+      "tenant_id": "cpo-42",
+      "tenant_name": "Acme Energy",
+      "event_type": 1,
+      "direction": null,
+      "raw_frame": null
+    }]
+  }'
+# {"captured":1,"failed":0}
+```

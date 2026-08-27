@@ -1,0 +1,253 @@
+---
+title: "Python SDK reference"
+sidebarTitle: "Python"
+description: "Complete API surface for the evpanda Python package."
+icon: "code"
+---
+
+<Columns cols={2}>
+  <Card title="Package" icon="package" horizontal>
+    `evpanda`
+
+    Python 3.12+. No required dependencies; zstd is an extra.
+  </Card>
+
+  <Card title="Source" icon="github" href="https://github.com/evpanda-labs/evpanda-py" horizontal>
+    evpanda-labs/evpanda-py
+  </Card>
+</Columns>
+
+```bash
+pip install "evpanda[zstd]"
+```
+
+<Note>
+  The Python SDK is in **preview** (`0.1.0`) and not yet on PyPI. Install from source meanwhile:
+
+  ```bash
+  pip install "git+https://github.com/evpanda-labs/evpanda-py"
+  ```
+
+  It has no HTTP adapters yet — OCPI users call the capture methods directly. The OCPP surface is complete.
+</Note>
+
+```python
+import evpanda
+from evpanda import ChargerIdentity, OCPPClient, OCPPConfig, OCPPDirection
+```
+
+## Clients
+
+The protocol is the class. `start` never raises: a bad config yields an inert no-op client.
+
+### `OCPIClient`
+
+<ResponseField name="OCPIClient.start(config: OCPIConfig) -> OCPIClient" type="classmethod">
+  Builds and starts the client, launching its background daemon thread.
+</ResponseField>
+
+<ResponseField name="capture_inbound_message(msg: OCPIMessageInput) -> None" type="method">
+  Buffers an inbound exchange (partner → you). Non-blocking, never raises.
+</ResponseField>
+
+<ResponseField name="capture_outbound_message(msg: OCPIMessageInput) -> None" type="method">
+  Buffers an outbound exchange (you → partner). Same guarantees.
+</ResponseField>
+
+<ResponseField name="flush() -> None" type="method">
+  Forces an immediate delivery of everything buffered and waits for it. Blocks for as long as the transport's retries take.
+</ResponseField>
+
+<ResponseField name="close(deadline: float | None = None) -> None" type="method">
+  Goes inert, then drains within `deadline` seconds (defaults to `drain_timeout`). Idempotent, never raises. Captures after it are safe no-ops.
+</ResponseField>
+
+### `OCPPClient`
+
+<ResponseField name="OCPPClient.start(config: OCPPConfig) -> OCPPClient" type="classmethod">
+  Builds and starts the client.
+</ResponseField>
+
+<ResponseField name="connection(identity: ChargerIdentity) -> OCPPSession" type="method">
+  Opens a capture session: mints a `connection_id`, records the connect, and returns the session handle.
+</ResponseField>
+
+<ResponseField name="capture_connect(msg: OCPPMessageInput) -> None" type="method">
+  Records a new connection. Uses `identity` and `connection_id` only.
+</ResponseField>
+
+<ResponseField name="capture_message(msg: OCPPMessageInput) -> None" type="method">
+  Records one frame. Requires `data` and `direction`; drops the message if either is missing. Oversize frames are dropped.
+</ResponseField>
+
+<ResponseField name="capture_disconnect(msg: OCPPMessageInput) -> None" type="method">
+  Records the connection closing.
+</ResponseField>
+
+`flush()` and `close()` behave as on `OCPIClient`.
+
+## `OCPPSession`
+
+```python
+class OCPPSession:
+    connection_id: str  # SDK-minted, fresh per connection() call
+
+    def message(self, data: bytes | str, direction: OCPPDirection) -> None: ...
+    def disconnect(self) -> None: ...
+```
+
+It is also a context manager — leaving the block records the disconnect:
+
+```python
+with panda.connection(ChargerIdentity(charger_id="CP-001")) as session:
+    session.message(frame, OCPPDirection.FROM_CP)
+```
+
+Frames may be `bytes` or `str`; a `str` is encoded as UTF-8.
+
+## Data classes
+
+```python
+@dataclass
+class HttpExchange:
+    method: str
+    url: str
+    status_code: int | None = None
+    request_headers: dict[str, str] = field(default_factory=dict)
+    response_headers: dict[str, str] = field(default_factory=dict)
+    request_body: bytes | None = None
+    response_body: bytes | None = None
+
+
+@dataclass
+class OCPIMessageInput:
+    identity: RoamingIdentity
+    data: HttpExchange
+
+
+@dataclass
+class OCPPMessageInput:
+    identity: ChargerIdentity
+    connection_id: str
+    data: bytes | str | None = None            # required by capture_message
+    direction: OCPPDirection | None = None     # required by capture_message
+```
+
+There is no direction field on `OCPIMessageInput` — the method you call stamps it.
+
+## Identity
+
+```python
+@dataclass
+class RoamingIdentity:
+    platform_id: str      # required
+    platform_name: str    # required
+    tenant_id: str | None = None    # all-or-nothing with tenant_name
+    tenant_name: str | None = None
+
+
+@dataclass
+class ChargerIdentity:
+    charger_id: str       # required
+    tenant_id: str | None = None    # all-or-nothing with tenant_name
+    tenant_name: str | None = None
+```
+
+## Enums
+
+```python
+class OCPIDirection(StrEnum):
+    IN = "IN"
+    OUT = "OUT"
+
+class OCPPDirection(StrEnum):
+    TO_CP = "TO_CP"
+    FROM_CP = "FROM_CP"
+
+class OCPPEventType(IntEnum):
+    DISCONNECT = 0
+    CONNECT = 1
+    MESSAGE = 2
+
+class Protocol(StrEnum):
+    OCPI = "ocpi"
+    OCPP = "ocpp"
+```
+
+`Compression` is a type alias: `Literal["gzip", "zstd"]`.
+
+## Configuration
+
+```python
+@dataclass
+class BaseConfig:
+    endpoint: str                            # required
+    api_key: str | None = None               # falls back to $EVPANDA_API_KEY
+    buffer_capacity: int | None = None       # default 10_000 messages
+    max_capture_bytes: int | None = None     # default 65536
+    flush_interval: float | None = None      # default 5.0 seconds
+    drain_timeout: float | None = None       # default 10.0, minimum 5.0
+    compression: Compression | None = None   # default "zstd"
+    debug: bool = False                      # master log switch
+    logger: logging.Logger | None = None     # used only when debug=True
+
+
+@dataclass
+class OCPIConfig(BaseConfig):
+    ocpi_allowed_headers: Iterable[str] | None = None  # extends the allowlist
+
+
+@dataclass
+class OCPPConfig(BaseConfig):
+    pass
+```
+
+Every field left at `None` takes its default. `endpoint` and `api_key` are hard-required — a bad value makes `start()` return an inert client. Every other field is a tunable: a bad value warns (only when `debug=True`) and falls back to its default.
+
+Intervals are float **seconds**, matching `time.sleep` and socket timeouts, where the Node SDK uses milliseconds.
+
+<ResponseField name="ConfigError" type="Exception">
+  Raised internally when config resolution fails. `start()` catches it and returns an inert client — you will not see it from the public API.
+</ResponseField>
+
+## Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `EVPANDA_API_KEY` | Supplies `api_key` when the config field is empty |
+
+## Threading
+
+Delivery runs on a **background daemon thread**. Capture calls only validate, cap, redact, copy, and enqueue — no I/O, no locks you can contend on, no awaiting.
+
+That makes them safe to call from anywhere: async handlers, worker threads, signal handlers, callbacks. They never block the event loop.
+
+<Warning>
+  `close()` and `flush()` do block, for up to the drain timeout. Call them from your shutdown path, not from a request handler or a coroutine you care about the latency of.
+</Warning>
+
+## Not available yet
+
+| | |
+| --- | --- |
+| HTTP adapters | Build the `HttpExchange` yourself — see [OCPI with Python](/ocpi/python) |
+| A counters API | Use `debug=True` and the dashboard's message volume |
+| `OCPIResolver` | Lands with the adapters |
+
+The capture methods, identity types, and config surface are stable; adapters will be a convenience layer on top of them.
+
+## Guarantees
+
+<AccordionGroup>
+  <Accordion title="Capture never raises" icon="shield">
+    Every capture path is guarded. A fault inside the SDK is swallowed and, with `debug=True`, logged — it never propagates into your code.
+  </Accordion>
+
+  <Accordion title="A bad config is inert, not fatal" icon="power-off">
+    `start()` catches every construction fault and returns a no-op client, so a malformed endpoint can't stop your service from starting.
+  </Accordion>
+
+  <Accordion title="Typed and strict" icon="check">
+    The package ships `py.typed` and is checked with mypy in strict mode, so your own type checker sees the full API.
+  </Accordion>
+</AccordionGroup>

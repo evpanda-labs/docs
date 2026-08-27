@@ -1,0 +1,124 @@
+---
+title: "Networks and API keys"
+description: "How EVPanda organizes your systems into networks, and how the SDK authenticates against one."
+icon: "network"
+---
+
+A **network** is the container for everything EVPanda records about one of your systems. It owns the traffic, the discovered chargers or partners, the issues found in that traffic, and the API keys that write to it.
+
+Networks come in two kinds, one per protocol.
+
+<Columns cols={2}>
+  <Card title="Charger network" icon="plug-zap" horizontal>
+    Watches an OCPP 1.6 CSMS. Holds chargers, OCPP messages, and charger issues.
+  </Card>
+
+  <Card title="Roaming network" icon="network" horizontal>
+    Watches an OCPI 2.2.1 server. Holds roaming platforms, OCPI exchanges, and roaming issues.
+  </Card>
+</Columns>
+
+The two are separate on purpose: they hold different entities, are validated by different rule sets, and use different API keys. A CSMS that also speaks OCPI needs one network of each, and one SDK client of each.
+
+## How many networks should you create?
+
+One per system, per environment.
+
+| You run | Create |
+| --- | --- |
+| A CSMS in production and one in staging | Two charger networks |
+| A CSMS and an OCPI server, both production | One charger network and one roaming network |
+| Multiple CPOs on shared infrastructure | One network, and use [tenants](/concepts/identity#tenants) to separate them |
+
+<Tip>
+  Resist the urge to put staging traffic in your production network. Issue counts, error rates, and online-charger stats are only meaningful when they describe one real system.
+</Tip>
+
+Chargers, platforms, and tenants are **discovered from traffic** — you never register them by hand. The first message that carries a new charger ID creates that charger in the dashboard.
+
+## Network settings
+
+Each network has settings that shape how its traffic is validated. Find them under the network's **Settings** tab.
+
+<ResponseField name="Reject unknown JSON fields" type="boolean" default="false">
+  When enabled, a message carrying JSON fields that the protocol doesn't define is reported as an issue. Turn it on for strict conformance work, off if your partners routinely send vendor extensions.
+</ResponseField>
+
+<ResponseField name="Anomaly detection" type="boolean" default="true">
+  Enables the behavioral checks that flag traffic which breaks no protocol rule but signals a real problem. See [Issues and validation](/concepts/issues).
+</ResponseField>
+
+<ResponseField name="Call timeout" type="integer" default="30">
+  Charger networks only. Seconds to wait for a `CALLRESULT` before an OCPP call counts as unanswered. Range: 1–600.
+</ResponseField>
+
+<ResponseField name="Idle timeout" type="integer" default="300">
+  Charger networks only. Seconds of silence after which a charger is treated as offline in the dashboard. Range: 30–900.
+</ResponseField>
+
+Roaming networks also carry the OCPI version and your OCPI role (`CPO`, `EMSP`, or `HUB`), which the validation engine uses to decide which side of an exchange is expected to do what.
+
+## API keys
+
+An API key authorizes the SDK to write into exactly one network.
+
+<Steps>
+  <Step title="Generate">
+    Open the network's **Settings** tab and generate a key. The raw value — `evp_sk_…` — is displayed **once**, at creation. EVPanda stores only a hash of it, so it cannot be shown again.
+  </Step>
+
+  <Step title="Store">
+    Put it in your secret manager and expose it to your service as `EVPANDA_API_KEY`. Every SDK falls back to that variable when no key is passed in code, which keeps the key out of your source.
+
+    ```bash
+    export EVPANDA_API_KEY="evp_sk_..."
+    ```
+  </Step>
+
+  <Step title="Rotate">
+    Generate the new key, deploy it, confirm traffic is still arriving, then revoke the old one. Revocation takes effect immediately.
+  </Step>
+</Steps>
+
+### What a key can and cannot do
+
+<Columns cols={2}>
+  <Card title="Scoped to one network" icon="lock" horizontal>
+    A key written for a charger network cannot write OCPI traffic, and cannot reach any other network in your account.
+  </Card>
+
+  <Card title="Write-only" icon="upload" horizontal>
+    Ingestion keys only submit captured traffic. They cannot read messages, issues, or settings — the dashboard uses your user session for that.
+  </Card>
+</Columns>
+
+<Warning>
+  An invalid key makes the ingestion API reject every batch with `401`, which the SDK treats as permanent and does not retry. Nothing is buffered forever, and nothing arrives. Watch the SDK's `DroppedUndeliverable` counter or its health log after a rotation.
+</Warning>
+
+## The ingestion endpoint
+
+All SDKs point at the same base URL, and append the protocol route themselves:
+
+```bash
+https://ingest.evpanda.io
+```
+
+| Client | Route it posts to |
+| --- | --- |
+| OCPP client | `POST /v1/ocpp` |
+| OCPI client | `POST /v1/ocpi` |
+
+You never build these paths yourself — set `endpoint` to the base URL and the SDK does the rest. See the [Ingestion API reference](/reference/ingestion-api) if you need the raw contract.
+
+## Next
+
+<Columns cols={2}>
+  <Card title="Identity" icon="fingerprint" href="/concepts/identity">
+    How every message is attributed to a charger, a partner, and a tenant.
+  </Card>
+
+  <Card title="What gets captured" icon="scan-line" href="/concepts/capture-model">
+    The exact shape of an OCPP event and an OCPI exchange.
+  </Card>
+</Columns>

@@ -1,0 +1,269 @@
+---
+title: "OCPI with Node"
+sidebarTitle: "Node"
+description: "Capture OCPI roaming traffic from a Node server with the express, fetch, and axios adapters, or by building exchanges yourself."
+icon: "code"
+---
+
+## Install
+
+```bash
+npm add @evpanda/sdk
+```
+
+```ts
+import { OCPIClient, ocpi } from "@evpanda/sdk";
+```
+
+`express` and `axios` need no install on the SDK's account — the adapters reference them as types only.
+
+<Note>
+  The adapters documented here are `@evpanda/sdk` **0.1.0**. On earlier versions, capture with [`captureInboundMessage` and `captureOutboundMessage`](#capturing-without-the-adapters) directly.
+</Note>
+
+## Start the client
+
+```ts evpanda.ts
+import { OCPIClient } from "@evpanda/sdk";
+
+// apiKey omitted → read from the EVPANDA_API_KEY environment variable.
+export const panda = OCPIClient.start({
+  endpoint: "https://ingest.evpanda.io",
+  debug: process.env.NODE_ENV !== "production",
+});
+```
+
+An OCPI client needs an OCPI API key, from a **roaming network**. A charger network's key will be rejected.
+
+## Write a resolver once
+
+All three adapters take the same `resolve` callback: request context in, roaming identity out. Write it once against your existing partner lookup and pass it everywhere.
+
+```ts resolver.ts
+import type { OCPIResolver } from "@evpanda/sdk";
+
+export const resolvePartner: OCPIResolver = ({ requestHeaders }) => {
+  const partner = lookupPartner(requestHeaders.authorization);
+  return {
+    platformId: partner?.id ?? "",
+    platformName: partner?.name ?? "",
+  };
+};
+```
+
+The resolver receives `{ method, url, requestHeaders }`, with header names already lowercased. Returning an identity that fails validation — an empty `platformId`, say — means the exchange is simply not captured; the request itself is never blocked.
+
+If you omit `resolve`, the SDK falls back to reading the `X-EVPanda-*` headers, which earlier middleware must stamp.
+
+## Inbound: partners calling you
+
+`ocpi.express` is connect-style `(req, res, next)` middleware typed against `node:http`, so it works on express and connect alike.
+
+```ts server.ts
+import express from "express";
+import { ocpi } from "@evpanda/sdk";
+
+import { panda } from "./evpanda.js";
+import { resolvePartner } from "./resolver.js";
+
+const app = express();
+
+// 1. A body parser must come first — the adapter reads req.body.
+app.use(express.json());
+
+// 2. Your auth layer.
+app.use(authenticatePartner);
+
+// 3. Capture, after auth.
+app.use(ocpi.express(panda, { resolve: resolvePartner }));
+
+app.post("/ocpi/2.2/cdrs", handleCdr);
+```
+
+The adapter tees `res.write` and `res.end` for the response body, and ships one message when the response finishes or closes.
+
+<Warning>
+  **Mount a body parser first.** The adapter reads the request body from `req.body` rather than teeing the raw stream — a `data` listener would flip the stream to flowing mode and could starve your own parser. Without a parser, exchanges are captured with no request body.
+
+  `express.raw()` gives you the exact bytes off the wire. `express.json()` gives a re-serialized form, which is usually fine and occasionally differs in key order or whitespace.
+</Warning>
+
+## Outbound: your calls to partners
+
+### fetch
+
+`ocpi.fetch` wraps a fetch implementation and returns a **new** one. `globalThis.fetch` is left untouched, so you must call the returned function for calls to be captured.
+
+```ts
+import { ocpi } from "@evpanda/sdk";
+
+const fetch = ocpi.fetch(panda, globalThis.fetch, {
+  resolve: resolvePartner,
+});
+
+await fetch(`${partner.baseUrl}/ocpi/2.2/sessions`, {
+  method: "POST",
+  headers: {
+    authorization: `Token ${partner.tokenB}`,
+    "content-type": "application/json",
+  },
+  body: JSON.stringify(session),
+});
+```
+
+Request and response are cloned and read in the background, so your caller gets the response without waiting on capture. Because it is just a `fetch`, any client that accepts one is instrumented too:
+
+```ts
+const api = ky.create({ fetch });        // ky
+const $api = ofetch.create({ fetch });   // ofetch
+```
+
+### axios
+
+`ocpi.axios` installs a request and response interceptor pair on the instance you pass, and returns that same instance — so the original variable is instrumented too. The error interceptor captures non-2xx responses as well, since axios rejects on those.
+
+```ts
+import axiosLib from "axios";
+
+const partnerApi = ocpi.axios(
+  panda,
+  axiosLib.create({ baseURL: partner.baseUrl }),
+  { resolve: resolvePartner },
+);
+
+await partnerApi.post("/ocpi/2.2/tokens", token, {
+  headers: { authorization: `Token ${partner.tokenB}` },
+});
+```
+
+<Warning>
+  In Node, axios goes through `node:http` — never `fetch`. Wrapping fetch captures nothing from axios, and vice versa. Instrument whichever client your OCPI calls actually use, or both.
+</Warning>
+
+### One partner per client?
+
+Set the identity headers as instance defaults and skip the resolver entirely. The adapters strip these headers before dispatch, so the partner never receives them.
+
+```ts
+const partnerApi = ocpi.axios(
+  panda,
+  axiosLib.create({
+    baseURL: partner.baseUrl,
+    headers: {
+      "X-EVPanda-Platform-Id": partner.id,
+      "X-EVPanda-Platform-Name": partner.name,
+    },
+  }),
+);
+```
+
+## Other frameworks
+
+koa, hono, and fastify have no shipped adapter. Call the capture methods directly — you hand the identity over instead of resolving it, so there is less to get wrong.
+
+<CodeGroup>
+  ```ts koa / hono
+  app.use(async (ctx, next) => {
+    const partner = lookupPartner(ctx.headers.authorization);
+    await next();
+    if (!partner) return;
+
+    panda.captureInboundMessage({
+      identity: { platformId: partner.id, platformName: partner.name },
+      data: {
+        method: ctx.method,
+        url: ctx.url,
+        statusCode: ctx.status,
+        requestHeaders: ctx.headers as Record<string, string>,
+        responseHeaders: ctx.response.headers as Record<string, string>,
+        requestBody: Buffer.from(JSON.stringify(ctx.request.body ?? "")),
+        responseBody: Buffer.from(JSON.stringify(ctx.body ?? "")),
+      },
+    });
+  });
+  ```
+
+  ```ts fastify
+  fastify.addHook("onResponse", async (req, reply) => {
+    const partner = lookupPartner(req.headers.authorization);
+    if (!partner) return;
+
+    panda.captureInboundMessage({
+      identity: { platformId: partner.id, platformName: partner.name },
+      data: {
+        method: req.method,
+        url: req.url,
+        statusCode: reply.statusCode,
+        requestHeaders: req.headers as Record<string, string>,
+        responseHeaders: reply.getHeaders() as Record<string, string>,
+        requestBody: Buffer.from(JSON.stringify(req.body ?? "")),
+      },
+    });
+  });
+  ```
+</CodeGroup>
+
+## Capturing without the adapters
+
+Both capture methods take `{ identity, data }`. The method name sets the direction.
+
+```ts
+panda.captureInboundMessage({
+  identity: { platformId: "acme", platformName: "Acme Mobility" },
+  data: {
+    method: "POST",
+    url: "/ocpi/2.2/cdrs",
+    statusCode: 201,
+    requestHeaders: { "content-type": "application/json" },
+    responseHeaders: { "content-type": "application/json" },
+    requestBody: Buffer.from(JSON.stringify({ id: "cdr-1" })),
+    responseBody: Buffer.from(JSON.stringify({ status_code: 1000 })),
+  },
+});
+```
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `method`, `url` | Yes | |
+| `requestHeaders`, `responseHeaders` | Yes | Pass `{}` if you have none |
+| `statusCode` | No | |
+| `requestBody`, `responseBody` | No | `Uint8Array` — raw bytes, capped at `maxCaptureBytes` |
+
+Both calls are non-blocking and never throw back at you.
+
+## Capture extra headers
+
+The header allowlist can be extended, never shrunk:
+
+```ts
+OCPIClient.start({
+  endpoint: "https://ingest.evpanda.io",
+  ocpiAllowedHeaders: ["x-trace-id"],
+});
+```
+
+See [Data handling](/concepts/data-handling#ocpi-the-header-allowlist) for the defaults.
+
+## Shut down cleanly
+
+```ts
+process.on("SIGTERM", async () => {
+  server.close();       // stop accepting first…
+  await panda.close();  // …then drain
+  process.exit(0);
+});
+```
+
+Closing also drops the adapters' internal channel, so a wrapped fetch, axios instance, or express middleware reverts to a zero-overhead pass-through instead of doing capture work into a closed client.
+
+## Next
+
+<Columns cols={2}>
+  <Card title="Node SDK reference" icon="book" href="/sdk/node">
+    Every export, method, and config option.
+  </Card>
+
+  <Card title="Monitoring" icon="activity" href="/operate/monitoring">
+    What the SDK logs, and what to watch.
+  </Card>
+</Columns>

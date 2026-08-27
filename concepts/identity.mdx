@@ -1,0 +1,156 @@
+---
+title: "Identity"
+description: "Every captured message carries the identity of the charger or roaming partner it belongs to. Here is how to supply it, and what happens when you don't."
+icon: "fingerprint"
+---
+
+EVPanda attributes every message to something in your network — a charge point, or a roaming partner. That attribution is what makes the dashboard useful: it is how a message becomes "this charger", how an issue becomes "this partner's fault", and how traffic splits per tenant.
+
+Identity is **per message**, not global configuration. One process can serve thousands of chargers or dozens of roaming partners, so the SDK asks who a message belongs to at the moment you capture it, not at the moment you start the client.
+
+## The two shapes
+
+<Tabs>
+  <Tab title="OCPP">
+    A charge point is identified by a **charger ID**: whatever your CSMS already uses to name a charge point.
+
+    | Field | Required | Max length |
+    | --- | --- | --- |
+    | `chargerId` | Yes | 64 |
+    | `tenantId` | Optional pair | 64 |
+    | `tenantName` | Optional pair | 32 |
+
+    OCPP identity is known at connect time — you resolve the charge point during the WebSocket handshake, before any frame arrives — so you supply it once per connection and the session handle carries it for every frame.
+
+    <CodeGroup>
+      ```go Go
+      id := evpanda.ChargerIdentity{ChargerID: "CP-001"}
+      ```
+
+      ```ts Node
+      const id = { chargerId: "CP-001" };
+      ```
+
+      ```python Python
+      id = ChargerIdentity(charger_id="CP-001")
+      ```
+    </CodeGroup>
+  </Tab>
+
+  <Tab title="OCPI">
+    A roaming partner is identified by a **platform ID and name**. Both are required: the ID is what EVPanda groups on, the name is what your team reads in the dashboard.
+
+    | Field | Required | Max length |
+    | --- | --- | --- |
+    | `platformId` | Yes | 64 |
+    | `platformName` | Yes | 64 |
+    | `tenantId` | Optional pair | 64 |
+    | `tenantName` | Optional pair | 32 |
+
+    OCPI identity is per request — it comes out of the token or credentials the partner presented — so you resolve it per exchange, usually in the same place your auth layer already looks the partner up.
+
+    <CodeGroup>
+      ```go Go
+      id := evpanda.RoamingIdentity{
+          PlatformID:   "acme",
+          PlatformName: "Acme Mobility",
+      }
+      ```
+
+      ```ts Node
+      const id = { platformId: "acme", platformName: "Acme Mobility" };
+      ```
+
+      ```python Python
+      id = RoamingIdentity(platform_id="acme", platform_name="Acme Mobility")
+      ```
+    </CodeGroup>
+
+    <Warning>
+      Identity is always the **partner on the other side of the exchange**, never your own platform — in both directions. When a partner pushes you a CDR, it's their identity. When you pull their locations, it's still their identity.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Tenants
+
+`tenantId` and `tenantName` are optional, and **all-or-nothing**: supply both or neither. A half-set pair fails validation and the message is dropped.
+
+Use tenants when one deployment serves several distinct operators — a CPO platform hosting sub-operators, a white-label CSMS, a hub carrying several parties. The dashboard uses them to filter chargers, platforms, messages, and issues, and to report per-tenant activity.
+
+<CodeGroup>
+  ```go Go
+  evpanda.ChargerIdentity{
+      ChargerID:  "CP-001",
+      TenantID:   "cpo-42",
+      TenantName: "Acme Energy",
+  }
+  ```
+
+  ```ts Node
+  {
+    chargerId: "CP-001",
+    tenantId: "cpo-42",
+    tenantName: "Acme Energy",
+  }
+  ```
+
+  ```python Python
+  ChargerIdentity(
+      charger_id="CP-001",
+      tenant_id="cpo-42",
+      tenant_name="Acme Energy",
+  )
+  ```
+</CodeGroup>
+
+If you have a single operator, leave them out entirely. You can start sending them later; tenants are discovered from traffic like everything else.
+
+<Warning>
+  **OCPP is the exception today.** The SDKs treat the tenant pair as optional for both protocols, but the ingestion API currently *requires* it on OCPP messages and rejects those that omit it — server-side, after a successful delivery, so nothing in the SDK reports it.
+
+  Until that is relaxed, send a tenant pair on OCPP even in a single-tenant CSMS. A constant value such as your own operator name is fine. See the [Ingestion API reference](/reference/ingestion-api).
+</Warning>
+
+## Choosing good identifiers
+
+<AccordionGroup>
+  <Accordion title="Use the ID your systems already use" icon="key">
+    A charger ID should be the same string your CSMS, your support tooling, and your field team all say out loud. Usually that's the OCPP identity from the WebSocket URL path. Don't mint an EVPanda-specific ID — you'll spend the rest of the year translating between them.
+  </Accordion>
+
+  <Accordion title="Keep IDs stable, keep names readable" icon="pencil">
+    `platformId` and `tenantId` group your data over time, so they must not change for the same entity. `platformName` and `tenantName` are display strings, and can be updated freely; EVPanda shows the most recent one it has seen.
+  </Accordion>
+
+  <Accordion title="Don't put secrets in identity fields" icon="shield-off">
+    Identity is stored and shown in the dashboard. It should identify a partner or a charger, not authenticate one. Never pass a token, a Token B, or a client certificate fingerprint as an ID.
+  </Accordion>
+
+  <Accordion title="Mind the length limits" icon="ruler">
+    The ingestion API rejects a message whose `tenantName` exceeds 32 characters, or whose other identity fields exceed 64. Long partner names get truncated at the source, not in the dashboard — trim them before you pass them in.
+  </Accordion>
+</AccordionGroup>
+
+## What happens to an unattributable message
+
+The SDK validates identity at capture, before anything is buffered. A message that fails validation is **dropped silently** — it is not queued, not sent, and never raises an error into your code.
+
+An identity is invalid when:
+
+- A required field is empty, missing, or whitespace only.
+- Exactly one of `tenantId` / `tenantName` is set.
+
+Dropping is deliberate: a message EVPanda can't attribute would arrive as an orphan that nobody can search for or act on. But because the drop is silent, it is also the most common reason for "the SDK isn't sending anything". Every SDK counts it.
+
+| Symptom | Likely cause |
+| --- | --- |
+| Everything drops, no traffic at all | An HTTP adapter is mounted **before** your auth layer, so no identity is resolved yet |
+| One partner drops | Your resolver returns an empty `platformName` for them |
+| Random messages drop | A half-set tenant pair — one field populated, the other blank |
+
+In Go, read `panda.Stats().DroppedInvalid`. In Node and Python, turn on `debug`. See [Monitoring](/operate/monitoring).
+
+<Note>
+  The HTTP adapters treat "no identity" as "don't capture", not as an error. A request the adapter can't attribute is served exactly as it would have been — your partners never see a difference.
+</Note>

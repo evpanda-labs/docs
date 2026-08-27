@@ -1,0 +1,180 @@
+---
+title: "Monitoring the SDK"
+description: "Counters, health logs, and how to tell a healthy integration from a silent one."
+icon: "activity"
+---
+
+An SDK that captures nothing because its identity resolution is misconfigured looks exactly like an SDK on an idle system. Both are silent, and neither fails. This page is how you tell them apart.
+
+## Counters
+
+The Go SDK exposes a snapshot of its delivery counters at any time, on any client — including an inert or closed one, which reports its final totals.
+
+```go
+s := panda.Stats()
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `Captured` | total | Messages that passed the chokepoint and entered the buffer |
+| `DroppedInvalid` | total | Identity failed validation |
+| `DroppedOversize` | total | Body or frame exceeded `MaxCaptureBytes`, or a required wire field was missing |
+| `DroppedUndeliverable` | total | Batches the transport could not deliver — retries exhausted, or a permanent rejection |
+| `DroppedEvicted` | total | Evicted from the buffer under pressure, oldest first |
+| `DroppedPanic` | total | Captures lost to a recovered panic. Any value above zero is an SDK bug |
+| `BufferedMessages` | gauge | Messages awaiting delivery right now |
+| `BufferBytes` | gauge | Their accounted footprint, always at or below `MaxBufferBytes` |
+
+`Stats().TotalDropped()` sums the five drop counters.
+
+### Each counter is one root cause
+
+That is the point of having six of them rather than one:
+
+| What you see | What it means |
+| --- | --- |
+| `Captured == 0` | The capture path isn't wired in at all — or the client is inert |
+| `DroppedInvalid` high | Identity resolution is failing. For the OCPI adapters, almost always mounted before your auth layer |
+| `DroppedOversize` high | Bodies exceed `MaxCaptureBytes` |
+| `DroppedEvicted` high | The upstream can't keep up, or the buffer is undersized for your traffic |
+| `DroppedUndeliverable` high | Network, API key, or ingestion fault |
+| `DroppedPanic > 0` | A bug in the SDK. Please report it |
+
+### Export them
+
+Counters are always on — no log level turns them off, and an atomic read costs nothing.
+
+```go
+prometheus.MustRegister(
+    prometheus.NewCounterFunc(
+        prometheus.CounterOpts{Name: "evpanda_captured_total"},
+        func() float64 { return float64(panda.Stats().Captured) },
+    ),
+    prometheus.NewCounterFunc(
+        prometheus.CounterOpts{Name: "evpanda_dropped_total"},
+        func() float64 { return float64(panda.Stats().TotalDropped()) },
+    ),
+    prometheus.NewGaugeFunc(
+        prometheus.GaugeOpts{Name: "evpanda_buffer_bytes"},
+        func() float64 { return float64(panda.Stats().BufferBytes) },
+    ),
+)
+```
+
+<Note>
+  The Node and Python SDKs don't expose a counters API yet. Use the debug log below, and the dashboard's own message volume, to confirm an integration is healthy.
+</Note>
+
+## What the SDK logs
+
+<Tabs>
+  <Tab title="Go">
+    Logging is **on by default**, at a bounded rate: at most one summary line per minute, and nothing at all while the client is healthy.
+
+    ```
+    level=WARN msg="evpanda: captures dropped" window=1m0s captured=12 invalid_identity=148302 buffered=0 buffer_bytes=0
+    ```
+
+    That line is the common integration fault made visible: 148,302 messages dropped for invalid identity in a minute, and 12 captured. Summarizing rather than logging per event matters — the fault that produces it drops on every single request, so per-event logging would emit at request rate.
+
+    | Mode | Output |
+    | --- | --- |
+    | `LogModeSilent` | Nothing. Counters still work |
+    | `LogModeErrors` | Default. Config problems at startup, plus the per-minute summary |
+    | `LogModeDebug` | Adds per-batch delivery failures, recovered capture faults, and a summary on close |
+
+    Set `LogMode` in config, or `EVPANDA_LOG=silent|errors|debug` in the environment to change it without touching code. Config wins over the environment.
+
+    ```go
+    evpanda.BaseConfig{
+        Endpoint: "https://ingest.evpanda.io",
+        LogMode:  evpanda.LogModeDebug,
+        Logger:   slog.New(handler), // defaults to slog.Default()
+    }
+    ```
+
+    The default is deliberately not silence: a customer should not have to redeploy with a debug flag to find out why nothing is arriving.
+  </Tab>
+
+  <Tab title="Node">
+    Logging is **off by default**. `debug: true` is the master switch; without it the SDK says nothing at all, including about config errors.
+
+    ```ts
+    const panda = OCPIClient.start({
+      endpoint: "https://ingest.evpanda.io",
+      debug: process.env.NODE_ENV !== "production",
+      logger: pino({ name: "evpanda" }),
+    });
+    ```
+
+    The logger interface is four methods — `debug`, `info`, `warn`, `error`, each taking a message and optional metadata — so pino, winston, bunyan, and `console` all satisfy it. Omit it and the SDK uses `console`.
+
+    <Tip>
+      Run staging with `debug: true` permanently. It is the only way a tunable typo or a bad endpoint will ever announce itself.
+    </Tip>
+  </Tab>
+
+  <Tab title="Python">
+    Logging is **off by default**. `debug=True` is the master switch; without it the SDK is completely silent.
+
+    ```python
+    import logging
+
+    panda = OCPIClient.start(
+        OCPIConfig(
+            endpoint="https://ingest.evpanda.io",
+            debug=True,
+            logger=logging.getLogger("evpanda"),
+        )
+    )
+    ```
+
+    With `logger=None` the SDK uses `logging.getLogger("evpanda")`, so you can configure it through your normal logging config.
+  </Tab>
+</Tabs>
+
+## Verifying an integration
+
+Run this checklist the first time you point an SDK at a network, and again after any change to identity resolution.
+
+<Steps>
+  <Step title="Confirm the client is live, not inert">
+    In Go, the error returned by `Start*` is nil. In Node and Python, `debug` is on and no config error appeared at startup.
+  </Step>
+
+  <Step title="Drive real traffic">
+    Connect a charge point, or make one OCPI call in each direction. Synthetic traffic that skips your auth layer will not exercise identity resolution — which is the part that usually breaks.
+  </Step>
+
+  <Step title="Wait one flush interval">
+    Five seconds by default. Or call `flush()` and wait for it.
+  </Step>
+
+  <Step title="Check the counters or the log">
+    `Captured` should be climbing and the drop counters flat. A drop counter climbing in step with `Captured` points straight at the cause — see the table above.
+  </Step>
+
+  <Step title="Check the dashboard">
+    Messages appear under your network. Chargers and platforms are created automatically the first time they send traffic, so a new entity appearing is itself confirmation.
+  </Step>
+
+  <Step title="Check both directions">
+    This is the step people skip. Confirm you see `TO_CP` frames as well as `FROM_CP`, or outbound OCPI exchanges as well as inbound. Half-instrumented is the most common production state, and it silently disables the most valuable checks.
+  </Step>
+</Steps>
+
+## What to alert on
+
+| Alert | Condition | Why |
+| --- | --- | --- |
+| **Capture stalled** | `Captured` flat while your service is serving traffic | The integration broke — a refactor moved the capture call, or the client went inert on redeploy |
+| **Identity failures** | `DroppedInvalid` rising | Identity resolution regressed. Usually catches a middleware-ordering change |
+| **Delivery failing** | `DroppedUndeliverable` rising | Network, DNS, egress policy, or a revoked API key |
+| **Buffer pressure** | `BufferBytes` sustained above ~50% of the ceiling | Delivery is falling behind. Eviction is next |
+| **SDK bug** | `DroppedPanic > 0` | Report it — this should never be non-zero |
+
+Alert on the drop counters as rates, not totals. They are monotonic since client start, so a total tells you something once went wrong, while a rate tells you it is going wrong now.
+
+<Tip>
+  The single most useful alert is the first one. Every other failure is loud somewhere; a capture call that quietly stopped being reached is not.
+</Tip>

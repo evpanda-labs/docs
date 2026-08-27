@@ -1,0 +1,272 @@
+---
+title: "Node SDK reference"
+sidebarTitle: "Node"
+description: "Complete API surface for @evpanda/sdk."
+icon: "code"
+---
+
+<Columns cols={2}>
+  <Card title="Package" icon="package" horizontal>
+    `@evpanda/sdk`
+
+    Node 18+. Dual ESM and CommonJS, fully typed.
+  </Card>
+
+  <Card title="Source" icon="github" href="https://github.com/evpanda-labs/evpanda-node" horizontal>
+    evpanda-labs/evpanda-node
+  </Card>
+</Columns>
+
+```bash
+npm add @evpanda/sdk
+npm add @mongodb-js/zstd   # optional: zstd compression
+```
+
+```ts
+import { OCPIClient, OCPPClient, ocpi } from "@evpanda/sdk";
+```
+
+<Note>
+  This reference describes **0.1.0**. Earlier published versions have no session handle and no `resolve` option on the adapters.
+</Note>
+
+## Clients
+
+Both clients extend a shared base. `start` never throws: any fault yields an inert no-op client.
+
+### `OCPIClient`
+
+<ResponseField name="static start(config: OCPIConfig): OCPIClient" type="method">
+  Builds and starts the client. A bad config yields an inert client rather than throwing.
+</ResponseField>
+
+<ResponseField name="captureInboundMessage(msg: OCPIMessageInput): void" type="method">
+  Buffers an inbound exchange (partner → you). Non-blocking, never throws.
+</ResponseField>
+
+<ResponseField name="captureOutboundMessage(msg: OCPIMessageInput): void" type="method">
+  Buffers an outbound exchange (you → partner). Same guarantees.
+</ResponseField>
+
+<ResponseField name="flush(): Promise<void>" type="method">
+  Forces an immediate delivery of everything buffered. Never rejects.
+</ResponseField>
+
+<ResponseField name="close(deadlineMs?: number): Promise<void>" type="method">
+  Goes inert, then drains within the deadline (defaults to `drainTimeout`). Idempotent, never rejects. Also drops the adapters' internal channel, so wrapped clients and middleware revert to zero-overhead pass-throughs.
+</ResponseField>
+
+### `OCPPClient`
+
+<ResponseField name="static start(config: OCPPConfig): OCPPClient" type="method">
+  Builds and starts the client.
+</ResponseField>
+
+<ResponseField name="connection(identity: ChargerIdentity): OCPPSession" type="method">
+  Opens a capture session: mints a `connectionId`, records the connect, and returns the session handle.
+</ResponseField>
+
+<ResponseField name="captureConnect(input: OCPPMessageInput): void" type="method">
+  Records a new connection. Uses `identity` and `connectionId` only.
+</ResponseField>
+
+<ResponseField name="captureMessage(input: OCPPMessageInput): void" type="method">
+  Records one frame. Requires `data` and `direction`; drops the message if either is missing. Oversize frames are dropped.
+</ResponseField>
+
+<ResponseField name="captureDisconnect(input: OCPPMessageInput): void" type="method">
+  Records the connection closing.
+</ResponseField>
+
+`flush()` and `close()` behave as on `OCPIClient`.
+
+## Types
+
+### `OCPPSession`
+
+```ts
+interface OCPPSession {
+  readonly connectionId: string;
+  message(data: Uint8Array | string, direction: OCPPDirection): void;
+  disconnect(): void;
+}
+```
+
+### Message inputs
+
+```ts
+interface OCPIMessageInput {
+  identity: RoamingIdentity;
+  data: HttpExchange;
+}
+
+interface OCPPMessageInput {
+  identity: ChargerIdentity;
+  connectionId: string;
+  data?: Uint8Array | string;  // required by captureMessage
+  direction?: OCPPDirection;   // required by captureMessage
+}
+```
+
+### `HttpExchange`
+
+```ts
+interface HttpExchange {
+  method: string;
+  url: string;
+  statusCode?: number;
+  requestHeaders: Record<string, string>;   // required — pass {} if none
+  responseHeaders: Record<string, string>;  // required — pass {} if none
+  requestBody?: Uint8Array;
+  responseBody?: Uint8Array;
+}
+```
+
+Bodies are raw bytes. Use `Buffer.from(...)`, which is a `Uint8Array`.
+
+### Identity
+
+```ts
+interface RoamingIdentity {
+  platformId: string;    // required
+  platformName: string;  // required
+  tenantId?: string;     // all-or-nothing with tenantName
+  tenantName?: string;
+}
+
+interface ChargerIdentity {
+  chargerId: string;     // required
+  tenantId?: string;     // all-or-nothing with tenantName
+  tenantName?: string;
+}
+```
+
+### Directions
+
+```ts
+type OCPIDirection = "IN" | "OUT";
+type OCPPDirection = "TO_CP" | "FROM_CP";
+```
+
+They are string literal types, so you write `"FROM_CP"` directly and TypeScript checks it.
+
+`OCPPEventType` is exported as a value enum: `Disconnect = 0`, `Connect = 1`, `Message = 2`.
+
+## Configuration
+
+```ts
+interface BaseConfig {
+  endpoint: string;                     // required
+  apiKey?: string;                      // falls back to $EVPANDA_API_KEY
+  bufferCapacity?: number;              // default 10000 messages
+  maxCaptureBytes?: number;             // default 65536
+  flushInterval?: number;               // default 5000 ms
+  drainTimeout?: number;                // default 10000 ms, minimum 5000
+  compression?: "gzip" | "zstd";        // default "zstd"
+  debug?: boolean;                      // default false — master log switch
+  logger?: Logger;                      // default console, only when debug
+}
+
+interface OCPIConfig extends BaseConfig {
+  ocpiAllowedHeaders?: string[];        // extends the allowlist
+}
+
+type OCPPConfig = BaseConfig;
+```
+
+`endpoint` and `apiKey` are hard-required — a bad value makes `start()` return an inert client. Every other option is a tunable: a bad value falls back to its default, logged when `debug` is on.
+
+### `Logger`
+
+```ts
+interface Logger {
+  debug(msg: string, meta?: Record<string, unknown>): void;
+  info(msg: string, meta?: Record<string, unknown>): void;
+  warn(msg: string, meta?: Record<string, unknown>): void;
+  error(msg: string, meta?: Record<string, unknown>): void;
+}
+```
+
+pino, winston, bunyan, and `console` all satisfy it.
+
+## Namespace `ocpi`
+
+### Adapters
+
+<ResponseField name="ocpi.express(sdk: OCPIClient, opts?: OCPIExpressOptions)" type="func">
+  Connect-style `(req, res, next)` middleware, typed against `node:http` — works on express and connect with no peer dependency. Reads the request body from `req.body`, so **mount a body parser first**. Tees `res.write` / `res.end` for the response body and ships on `finish` or `close`.
+</ResponseField>
+
+<ResponseField name="ocpi.fetch(sdk: OCPIClient, baseFetch: typeof fetch, opts?: OCPIFetchOptions)" type="func">
+  Wraps a fetch implementation and returns a new one. `globalThis.fetch` is left untouched — call the returned function. Request and response are cloned and read in the background, so callers never wait on capture.
+</ResponseField>
+
+<ResponseField name="ocpi.axios(sdk: OCPIClient, instance: AxiosInstance, opts?: OCPIAxiosOptions)" type="func">
+  Installs a request/response interceptor pair on the instance you pass, and returns that same instance. The error interceptor captures non-2xx responses too, since axios rejects on those.
+</ResponseField>
+
+All three take the same option:
+
+```ts
+interface OCPIExpressOptions { resolve?: OCPIResolver }
+// OCPIFetchOptions and OCPIAxiosOptions are identical
+```
+
+### Resolvers
+
+```ts
+interface OCPIResolverCtx {
+  method: string;
+  url: string;
+  requestHeaders: Record<string, string>; // keys lowercased
+}
+
+type OCPIResolver = (ctx: OCPIResolverCtx) => RoamingIdentity;
+```
+
+A resolver that throws, or returns an identity that fails validation, means the exchange isn't captured — the request itself is never blocked or altered.
+
+<ResponseField name="ocpi.headerResolver" type="OCPIResolver">
+  The shipped default, used when `resolve` is omitted. Reads the `X-EVPanda-*` headers, which earlier middleware must stamp — partners will not send them.
+</ResponseField>
+
+<ResponseField name="ocpi.IDENTITY_HEADERS" type="object">
+  The header names the default resolver reads:
+
+  ```ts
+  {
+    platformId: "x-evpanda-platform-id",
+    platformName: "x-evpanda-platform-name",
+    tenantId: "x-evpanda-tenant-id",
+    tenantName: "x-evpanda-tenant-name",
+  }
+  ```
+
+  The outbound adapters strip all four before dispatch, so partners never receive them.
+</ResponseField>
+
+## Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `EVPANDA_API_KEY` | Supplies `apiKey` when the config field is empty |
+
+## Guarantees
+
+<AccordionGroup>
+  <Accordion title="Capture never throws" icon="shield">
+    Every capture path is wrapped. A fault inside the SDK is swallowed and, with `debug` on, logged — it never propagates into your code.
+  </Accordion>
+
+  <Accordion title="No globals are patched" icon="globe">
+    `ocpi.fetch` returns a new function and leaves `globalThis.fetch` alone. There are no load-order requirements — import the SDK wherever you like.
+  </Accordion>
+
+  <Accordion title="Zero required runtime dependencies" icon="package-open">
+    zstd is an optional peer; without it the SDK falls back to gzip. `express` and `axios` are referenced as types only, so the runtime bundle never imports them.
+  </Accordion>
+
+  <Accordion title="An inert client costs nothing" icon="power-off">
+    Adapters wrapped around an inert or closed client short-circuit to a pass-through: no resolver call, no response patching, not even a call frame per request.
+  </Accordion>
+</AccordionGroup>

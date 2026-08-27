@@ -1,0 +1,335 @@
+---
+title: "Go SDK reference"
+sidebarTitle: "Go"
+description: "Complete API surface for github.com/evpanda-labs/evpanda-go."
+icon: "code"
+---
+
+<Columns cols={2}>
+  <Card title="Package" icon="package" horizontal>
+    `github.com/evpanda-labs/evpanda-go`
+
+    Requires Go 1.24+. One dependency: `klauspost/compress`.
+  </Card>
+
+  <Card title="Godoc" icon="book" href="https://pkg.go.dev/github.com/evpanda-labs/evpanda-go" horizontal>
+    Full generated reference on pkg.go.dev.
+  </Card>
+</Columns>
+
+```bash
+go get github.com/evpanda-labs/evpanda-go
+```
+
+```go
+import (
+	evpanda "github.com/evpanda-labs/evpanda-go"
+	"github.com/evpanda-labs/evpanda-go/ocpi" // optional HTTP adapters
+)
+```
+
+## Constructors
+
+The protocol is the client. Both constructors always return a non-nil, usable client: on a bad `Endpoint` or `APIKey` you get an inert no-op plus an error, so a config typo can never crash your boot.
+
+<ResponseField name="StartOCPI(cfg OCPIConfig) (*OCPIClient, error)" type="func">
+  Validates the config, builds the client, and launches its background worker.
+</ResponseField>
+
+<ResponseField name="StartOCPP(cfg OCPPConfig) (*OCPPClient, error)" type="func">
+  Same, for OCPP.
+</ResponseField>
+
+## Shared lifecycle
+
+Both clients carry these.
+
+<ResponseField name="Stats() Stats" type="method">
+  A snapshot of the client's delivery counters. Always available — safe on an inert or closed client, which reports its final totals.
+</ResponseField>
+
+<ResponseField name="CaptureLimits() (maxCaptureBytes int, active bool)" type="method">
+  The resolved per-body cap and whether the client is currently capturing. `active` is false for an inert or closed client. Exported for writing adapters for frameworks the SDK doesn't ship.
+</ResponseField>
+
+<ResponseField name="Flush() error" type="method">
+  Delivers everything buffered and waits for that delivery to settle. Blocks for as long as the transport's retries take — a diagnostic and shutdown tool, not something for a request path. Returns non-nil only if an internal panic was recovered.
+</ResponseField>
+
+<ResponseField name="Close() error" type="method">
+  Stops capture and drains within `DrainTimeout`. Idempotent; captures after it are safe no-ops. Returns [`ErrDrainIncomplete`](#errors) if the deadline passed with messages still buffered.
+</ResponseField>
+
+<ResponseField name="Shutdown(ctx context.Context) error" type="method">
+  `Close` with a caller-supplied deadline. Use it when your service already has a shutdown context.
+</ResponseField>
+
+## OCPI
+
+### `*OCPIClient`
+
+<ResponseField name="CaptureInboundMessage(msg OCPIMessageInput)" type="method">
+  Buffers an inbound exchange (partner → you). Non-blocking, never panics. A message with an invalid identity or an oversize body is silently dropped.
+</ResponseField>
+
+<ResponseField name="CaptureOutboundMessage(msg OCPIMessageInput)" type="method">
+  Buffers an outbound exchange (you → partner). Same guarantees.
+</ResponseField>
+
+### `OCPIMessageInput`
+
+```go
+type OCPIMessageInput struct {
+	Identity RoamingIdentity // the partner on the other side
+	Data     HTTPExchange
+}
+```
+
+There is no direction field — the method you call stamps it.
+
+### `HTTPExchange`
+
+```go
+type HTTPExchange struct {
+	Method          string
+	URL             string
+	StatusCode      int               // zero is sent as null
+	RequestHeaders  map[string]string // filtered by the allowlist
+	ResponseHeaders map[string]string // filtered by the allowlist
+	RequestBody     []byte            // prefer SetRequestBody
+	ResponseBody    []byte            // prefer SetResponseBody
+}
+```
+
+<ResponseField name="SetRequestBody(b []byte)" type="method">
+  Records `b` as the request body, **copying** it. Use this rather than assigning the field: a capture is held in memory until the next flush, so a body assigned straight from a pooled buffer would be serialized after you had already overwritten it. An empty or nil body is recorded as absent.
+</ResponseField>
+
+<ResponseField name="SetResponseBody(b []byte)" type="method">
+  The same, for the response body.
+</ResponseField>
+
+## OCPP
+
+### `*OCPPClient`
+
+<ResponseField name="Connection(identity ChargerIdentity) *OCPPSession" type="method">
+  Opens a capture session for one connection: mints a connection ID, records the connect, and returns the session. The recommended path.
+</ResponseField>
+
+<ResponseField name="CaptureConnect(msg OCPPMessageInput)" type="method">
+  Records a new connection. Uses `Identity` and `ConnectionID` only.
+</ResponseField>
+
+<ResponseField name="CaptureMessage(msg OCPPMessageInput)" type="method">
+  Records one frame. Requires `Data` and `Direction`, and drops the message if either is missing. Oversize frames are dropped.
+</ResponseField>
+
+<ResponseField name="CaptureDisconnect(msg OCPPMessageInput)" type="method">
+  Records the connection closing. Uses `Identity` and `ConnectionID` only.
+</ResponseField>
+
+### `*OCPPSession`
+
+```go
+type OCPPSession struct {
+	ConnectionID string // SDK-minted, fresh per Connection call
+	// contains filtered or unexported fields
+}
+```
+
+<ResponseField name="Message(data []byte, direction OCPPDirection)" type="method">
+  Captures one frame. Oversize frames are dropped.
+</ResponseField>
+
+<ResponseField name="Disconnect()" type="method">
+  Captures the connection closing.
+</ResponseField>
+
+### `OCPPMessageInput`
+
+```go
+type OCPPMessageInput struct {
+	Identity     ChargerIdentity
+	ConnectionID string          // stable for one connection
+	Data         []byte          // required by CaptureMessage
+	Direction    OCPPDirection   // required by CaptureMessage
+}
+```
+
+## Identity
+
+```go
+type RoamingIdentity struct {
+	PlatformID   string // required
+	PlatformName string // required
+	TenantID     string // optional, all-or-nothing with TenantName
+	TenantName   string
+}
+
+type ChargerIdentity struct {
+	ChargerID  string // required
+	TenantID   string // optional, all-or-nothing with TenantName
+	TenantName string
+}
+```
+
+Both have a `Valid() bool` method — the single rule source every capture path uses. Call it yourself to check an identity before you build a message around it.
+
+## Configuration
+
+```go
+type BaseConfig struct {
+	Endpoint        string         // required
+	APIKey          string         // falls back to $EVPANDA_API_KEY
+	MaxBufferBytes  int            // default 32 MiB, minimum 64 KiB
+	MaxCaptureBytes int            // default 65536
+	FlushInterval   time.Duration  // default 5s
+	DrainTimeout    time.Duration  // default 10s, minimum 5s
+	Compression     Compression    // default CompressionZstd
+	LogMode         LogMode        // default LogModeErrors
+	Logger          *slog.Logger   // default slog.Default()
+}
+
+type OCPIConfig struct {
+	BaseConfig
+	OCPIAllowedHeaders []string // extends the allowlist; never shrinks it
+}
+
+type OCPPConfig struct {
+	BaseConfig
+}
+```
+
+Every field except `Endpoint` and `APIKey` takes its default at the zero value, and an out-of-range value falls back to that default with a warning. See [Configuration](/operate/configuration).
+
+## Constants
+
+```go
+// Direction, relative to the charge point.
+evpanda.FromCP // "FROM_CP"
+evpanda.ToCP   // "TO_CP"
+
+// Direction, relative to your OCPI server.
+evpanda.OCPIInbound  // "IN"
+evpanda.OCPIOutbound // "OUT"
+
+// Compression codecs.
+evpanda.CompressionZstd
+evpanda.CompressionGzip
+
+// Log verbosity.
+evpanda.LogModeSilent
+evpanda.LogModeErrors
+evpanda.LogModeDebug
+
+// Protocol routes.
+evpanda.ProtocolOCPI // "ocpi"
+evpanda.ProtocolOCPP // "ocpp"
+
+// OCPP lifecycle events.
+evpanda.OCPPEventTypeDisconnect // 0
+evpanda.OCPPEventTypeConnect    // 1
+evpanda.OCPPEventTypeMessage    // 2
+```
+
+## Stats
+
+```go
+type Stats struct {
+	Captured             uint64
+	DroppedInvalid       uint64
+	DroppedOversize      uint64
+	DroppedEvicted       uint64
+	DroppedUndeliverable uint64
+	DroppedPanic         uint64
+	BufferedMessages     int
+	BufferBytes          int
+}
+```
+
+`TotalDropped() uint64` sums the five drop counters. See [Monitoring](/operate/monitoring) for what each one means.
+
+## Errors
+
+<ResponseField name="ErrDrainIncomplete" type="error">
+  Returned by `Close` and `Shutdown` when the drain deadline elapsed with messages still buffered.
+</ResponseField>
+
+## Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `EVPANDA_API_KEY` | Supplies `APIKey` when the config field is empty |
+| `EVPANDA_LOG` | `silent`, `errors`, or `debug`. An explicit `LogMode` in config wins |
+
+## Package `ocpi`
+
+Drop-in HTTP adapters. Both take a `Capturer` — satisfied by `*evpanda.OCPIClient` — so a test can drive an adapter without a running pipeline.
+
+<ResponseField name="Middleware(c Capturer, opts ...Option) func(http.Handler) http.Handler" type="func">
+  Captures inbound exchanges. Standard net/http middleware shape. Mount it after whatever authenticates the partner.
+</ResponseField>
+
+<ResponseField name="RoundTripper(c Capturer, base http.RoundTripper, opts ...Option) http.RoundTripper" type="func">
+  Captures outbound exchanges. A nil `base` means `http.DefaultTransport`. Capture completes when the response body is closed.
+</ResponseField>
+
+<ResponseField name="ContextWithIdentity(ctx context.Context, id evpanda.RoamingIdentity) context.Context" type="func">
+  Stores an identity on the context for the adapters to pick up. The preferred way to attribute an exchange.
+</ResponseField>
+
+<ResponseField name="IdentityFromContext(ctx context.Context) (evpanda.RoamingIdentity, bool)" type="func">
+  Reads it back. The identity is returned as stored, not validated.
+</ResponseField>
+
+<ResponseField name="DefaultResolver(r *http.Request) (evpanda.RoamingIdentity, bool)" type="func">
+  What both adapters use when no resolver is configured: the request context first, then the `X-EVPanda-*` headers.
+</ResponseField>
+
+<ResponseField name="WithResolver(resolve Resolver) Option" type="func">
+  Replaces the resolver entirely. A resolver returning `false` — or an identity that fails validation — means the exchange isn't captured; the request itself is never blocked or altered.
+</ResponseField>
+
+### Types
+
+```go
+type Resolver func(r *http.Request) (evpanda.RoamingIdentity, bool)
+
+type Capturer interface {
+	CaptureInboundMessage(evpanda.OCPIMessageInput)
+	CaptureOutboundMessage(evpanda.OCPIMessageInput)
+	CaptureLimits() (maxCaptureBytes int, active bool)
+}
+```
+
+### Header constants
+
+```go
+ocpi.HeaderPlatformID   // "X-EVPanda-Platform-Id"
+ocpi.HeaderPlatformName // "X-EVPanda-Platform-Name"
+ocpi.HeaderTenantID     // "X-EVPanda-Tenant-Id"
+ocpi.HeaderTenantName   // "X-EVPanda-Tenant-Name"
+```
+
+The round tripper strips all four before dispatch, so partners never receive them.
+
+## Guarantees
+
+<AccordionGroup>
+  <Accordion title="Capture never blocks and never panics" icon="shield">
+    Every capture path is wrapped in a recovery guard. A panic inside the SDK is recovered, counted as `DroppedPanic`, and swallowed — it never reaches your process.
+  </Accordion>
+
+  <Accordion title="Clients are safe for concurrent use" icon="git-branch">
+    Both clients and the session handle can be shared across goroutines. Capture takes no lock your code can contend on.
+  </Accordion>
+
+  <Accordion title="A bad config is inert, not fatal" icon="power-off">
+    `Start*` never returns nil. An inert client no-ops every capture, reports zeroed stats, and returns nil from its lifecycle methods.
+  </Accordion>
+
+  <Accordion title="Adapters never alter a request or response" icon="git-compare">
+    The middleware forwards status, headers, and body unchanged and supports `http.Flusher` and `http.Hijacker`. The round tripper's only modification is stripping the SDK's own identity headers.
+  </Accordion>
+</AccordionGroup>

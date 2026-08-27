@@ -1,0 +1,227 @@
+---
+title: "OCPI with Go"
+sidebarTitle: "Go"
+description: "Capture OCPI roaming traffic from a Go server with net/http middleware and a RoundTripper, or by building exchanges yourself."
+icon: "code"
+---
+
+## Install
+
+```bash
+go get github.com/evpanda-labs/evpanda-go
+```
+
+```go
+import (
+	evpanda "github.com/evpanda-labs/evpanda-go"
+	"github.com/evpanda-labs/evpanda-go/ocpi" // HTTP adapters
+)
+```
+
+The adapters live in their own package so the capture core stays dependency-free. Both are stdlib-only.
+
+## Start the client
+
+```go
+panda, err := evpanda.StartOCPI(evpanda.OCPIConfig{
+	BaseConfig: evpanda.BaseConfig{
+		Endpoint: "https://ingest.evpanda.io", // APIKey → EVPANDA_API_KEY
+	},
+})
+if err != nil {
+	log.Printf("evpanda: %v (running inert)", err)
+}
+defer func() { _ = panda.Close() }()
+```
+
+An OCPI client needs an OCPI API key, from a **roaming network**. A charger network's key will be rejected.
+
+## Inbound: partners calling you
+
+`ocpi.Middleware` is a standard `func(http.Handler) http.Handler`. Mount it **after** whatever authenticates the partner, so the identity is already on the request context when capture runs.
+
+```go
+mux := http.NewServeMux()
+mux.Handle("POST /ocpi/2.2/cdrs", cdrHandler)
+mux.Handle("PUT /ocpi/2.2/sessions/{id}", sessionHandler)
+
+srv := &http.Server{
+	Addr:    ":8080",
+	Handler: auth(ocpi.Middleware(panda)(mux)),
+}
+```
+
+### Stamp the identity where you already authenticate
+
+The default resolver reads the request context first. Put the partner there in the middleware that looks them up:
+
+```go
+func auth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		partner, ok := lookupPartner(r.Header.Get("Authorization"))
+		if !ok {
+			http.Error(w, "unknown partner", http.StatusUnauthorized)
+			return
+		}
+
+		ctx := ocpi.ContextWithIdentity(r.Context(), evpanda.RoamingIdentity{
+			PlatformID:   partner.ID,
+			PlatformName: partner.Name,
+		})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+```
+
+The middleware records the request body as your handler reads it, tees the response on its way out, and ships one message when the handler returns — including when the handler panics, so the exchange that broke your server is still recorded.
+
+<Note>
+  The response your partner receives is never altered. The middleware forwards status, headers, and body unchanged, and supports `http.Flusher` and `http.Hijacker` through the wrapped writer.
+</Note>
+
+### Other routers
+
+The middleware is the stdlib shape, so it composes with everything:
+
+<CodeGroup>
+  ```go chi
+  r := chi.NewRouter()
+  r.Use(auth)
+  r.Use(ocpi.Middleware(panda))
+  ```
+
+  ```go gorilla/mux
+  r := mux.NewRouter()
+  r.Use(auth, ocpi.Middleware(panda))
+  ```
+
+  ```go echo
+  e.Use(echo.WrapMiddleware(auth))
+  e.Use(echo.WrapMiddleware(ocpi.Middleware(panda)))
+  ```
+
+  ```go gin
+  // A gin engine is an http.Handler — wrap it, with your stdlib auth
+  // middleware on the outside so identity is resolved first.
+  engine := gin.New()
+  srv := &http.Server{Handler: auth(ocpi.Middleware(panda)(engine))}
+  ```
+</CodeGroup>
+
+## Outbound: your calls to partners
+
+`ocpi.RoundTripper` wraps any transport and returns a new one. Every call made through that client is captured, including calls made by a generated OCPI client that accepts an `*http.Client`.
+
+```go
+client := &http.Client{
+	Transport: ocpi.RoundTripper(panda, nil), // nil base → http.DefaultTransport
+	Timeout:   30 * time.Second,
+}
+```
+
+You have already looked the partner up to get their Token B, so stamp the identity on the request you're about to send:
+
+```go
+ctx = ocpi.ContextWithIdentity(ctx, evpanda.RoamingIdentity{
+	PlatformID:   partner.ID,
+	PlatformName: partner.Name,
+})
+
+req, _ := http.NewRequestWithContext(ctx, http.MethodPost, partner.URL+"/sessions", body)
+req.Header.Set("Authorization", "Token "+partner.TokenB)
+
+resp, err := client.Do(req)
+if err != nil {
+	return err
+}
+defer resp.Body.Close() // capture completes when the body is closed
+```
+
+<Warning>
+  Close the response body — as you should anyway. Outbound capture completes when the body is read to the end or closed, so a leaked body is also a message that never ships.
+</Warning>
+
+A transport error captures nothing: there is no exchange to record. The only change the round tripper makes to your request is stripping the `X-EVPanda-*` headers before dispatch, so a partner never receives them.
+
+## Custom resolvers
+
+If identity lives somewhere the default resolver can't see — a client certificate, a path prefix, a subdomain — pass your own. It runs once per request, and returning `false` means "don't capture this one".
+
+```go
+byPath := func(r *http.Request) (evpanda.RoamingIdentity, bool) {
+	name, ok := strings.CutPrefix(r.URL.Path, "/partners/")
+	if !ok {
+		return evpanda.RoamingIdentity{}, false // not captured
+	}
+	return evpanda.RoamingIdentity{PlatformID: name, PlatformName: name}, true
+}
+
+ocpi.Middleware(panda, ocpi.WithResolver(byPath))
+ocpi.RoundTripper(panda, nil, ocpi.WithResolver(byPath))
+```
+
+A resolver that panics is treated as "no identity" — the request is served normally and simply isn't captured.
+
+## Capturing without the adapters
+
+When the adapters don't fit — a non-stdlib server, a message queue, a replay tool — build the exchange yourself.
+
+```go
+data := evpanda.HTTPExchange{
+	Method:          "POST",
+	URL:             "/ocpi/2.2/cdrs",
+	StatusCode:      201,
+	RequestHeaders:  map[string]string{"content-type": "application/json"},
+	ResponseHeaders: map[string]string{"content-type": "application/json"},
+}
+data.SetRequestBody(reqBytes)   // copies — reuse your buffer right after
+data.SetResponseBody(respBytes)
+
+panda.CaptureInboundMessage(evpanda.OCPIMessageInput{
+	Identity: evpanda.RoamingIdentity{
+		PlatformID:   "acme",
+		PlatformName: "Acme Mobility",
+	},
+	Data: data,
+})
+```
+
+<Tip>
+  Use `SetRequestBody` and `SetResponseBody` rather than assigning the fields. They copy, so the SDK owns what it buffers and you are free to reuse a pooled buffer the moment the call returns. Assigning directly hands the SDK memory you might overwrite before the next flush.
+</Tip>
+
+`StatusCode` and both bodies are optional; header maps may be nil. `CaptureOutboundMessage` is the same call for the other direction.
+
+## Capture extra headers
+
+The header allowlist can be extended, never shrunk:
+
+```go
+evpanda.StartOCPI(evpanda.OCPIConfig{
+	BaseConfig:         evpanda.BaseConfig{Endpoint: endpoint},
+	OCPIAllowedHeaders: []string{"x-trace-id"},
+})
+```
+
+See [Data handling](/concepts/data-handling#ocpi-the-header-allowlist) for the defaults.
+
+## Shut down cleanly
+
+```go
+srv.Shutdown(ctx)                  // stop accepting first…
+if err := panda.Shutdown(ctx); err != nil {
+	log.Printf("evpanda: %v", err) // …then drain
+}
+```
+
+## Next
+
+<Columns cols={2}>
+  <Card title="Go SDK reference" icon="book" href="/sdk/go">
+    Every type, method, and config field.
+  </Card>
+
+  <Card title="Monitoring" icon="activity" href="/operate/monitoring">
+    Counters, health logs, and what to alert on.
+  </Card>
+</Columns>

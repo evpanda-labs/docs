@@ -1,0 +1,219 @@
+---
+title: "OCPP with Python"
+sidebarTitle: "Python"
+description: "Capture OCPP traffic from a Python CSMS: start the client, open a session per socket, record every frame."
+icon: "code"
+---
+
+## Install
+
+```bash
+pip install "evpanda[zstd]"
+```
+
+Requires Python 3.12 or later. The `zstd` extra is optional — without it the SDK falls back to gzip.
+
+<Note>
+  The Python SDK is in **preview**. Until it reaches PyPI, install it from source:
+
+  ```bash
+  pip install "git+https://github.com/evpanda-labs/evpanda-py"
+  ```
+
+  It has no HTTP adapters yet, so OCPI users call the capture methods directly. The OCPP surface documented here is complete.
+</Note>
+
+## Start the client
+
+Start one client at import or app startup and share it. `start` never raises: a bad config yields an inert no-op client rather than crashing your CSMS.
+
+```python evpanda_client.py
+from evpanda import OCPPClient, OCPPConfig
+
+# api_key omitted → read from the EVPANDA_API_KEY environment variable.
+panda = OCPPClient.start(
+    OCPPConfig(endpoint="https://ingest.evpanda.io")
+)
+```
+
+Delivery runs on a background daemon thread, so capture calls are safe from async code, threads, and callbacks alike — they never block the event loop and never await.
+
+<Tip>
+  Set `debug=True` in staging. It is the only way the Python SDK reports a config problem — the default is complete silence.
+</Tip>
+
+## Capture a connection
+
+This example uses [`websockets`](https://websockets.readthedocs.io). The three capture calls sit in the same places whatever server you use, including the [`ocpp`](https://github.com/mobilityhouse/ocpp) library's `ChargePoint` class.
+
+```python csms.py
+import asyncio
+
+import websockets
+from evpanda import ChargerIdentity, OCPPDirection
+
+from evpanda_client import panda
+
+
+async def handle_charger(socket) -> None:
+    # 1. Identify the charge point exactly as your CSMS already does.
+    identity = resolve_charger(socket)
+    if identity is None:
+        await socket.close(1008, "unknown charge point")
+        return
+
+    # 2. Open the capture session. Leaving the block records the disconnect,
+    #    on clean closes and abrupt drops alike.
+    with panda.connection(identity) as session:
+
+        # 3. One send path, so no outbound frame escapes uncaptured.
+        async def send(frame: str) -> None:
+            await socket.send(frame)
+            session.message(frame, OCPPDirection.TO_CP)
+
+        async for frame in socket:
+            # Capture before you handle: a frame that breaks your handler
+            # is exactly the frame you want recorded.
+            session.message(frame, OCPPDirection.FROM_CP)
+
+            reply = handle_frame(identity, frame)  # your CSMS logic
+            if reply is not None:
+                await send(reply)
+
+
+def resolve_charger(socket) -> ChargerIdentity | None:
+    """Read the charge point identity from the URL path:
+    wss://csms.example/ocpp/CP-001. Use whatever your CSMS already relies
+    on — Basic auth, a client certificate, or a database lookup.
+    """
+    charger_id = socket.request.path.rsplit("/", 1)[-1]
+    return ChargerIdentity(charger_id=charger_id) if charger_id else None
+
+
+async def main() -> None:
+    async with websockets.serve(
+        handle_charger, "0.0.0.0", 8080, subprotocols=["ocpp1.6"]
+    ):
+        await asyncio.Future()  # run forever
+
+
+asyncio.run(main())
+```
+
+The session is also usable without the `with` block — call `disconnect()` yourself, from a `finally`:
+
+```python
+session = panda.connection(identity)
+try:
+    ...
+finally:
+    session.disconnect()
+```
+
+<Warning>
+  Whichever form you use, make sure `disconnect()` runs on abrupt drops too. A charge point that loses power never closes cleanly, and a session that never ends makes a flapping charger look healthy.
+</Warning>
+
+## Frames may be `str` or `bytes`
+
+`message()` accepts either. A `str` is encoded as UTF-8 before capture, so you can pass the frame in whatever form your WebSocket library hands you.
+
+```python
+session.message('[2,"19","BootNotification",{}]', OCPPDirection.FROM_CP)
+session.message(b'[3,"19",{"status":"Accepted"}]', OCPPDirection.TO_CP)
+```
+
+## The flat primitives
+
+`connection()` is built on three lower-level calls. Use them when a session handle doesn't fit — replaying an archive, or capturing from a component that only sees frames.
+
+```python
+import uuid
+
+from evpanda import OCPPMessageInput
+
+connection_id = str(uuid.uuid4())  # stable per socket, fresh per reconnect
+
+panda.capture_connect(
+    OCPPMessageInput(identity=identity, connection_id=connection_id)
+)
+
+panda.capture_message(
+    OCPPMessageInput(
+        identity=identity,
+        connection_id=connection_id,
+        data=frame,
+        direction=OCPPDirection.FROM_CP,
+    )
+)
+
+panda.capture_disconnect(
+    OCPPMessageInput(identity=identity, connection_id=connection_id)
+)
+```
+
+`capture_message` requires both `data` and `direction` and drops the message if either is missing. Connect and disconnect ignore both.
+
+## Multi-tenant CSMS
+
+Add the tenant pair to the identity at handshake. It is optional but all-or-nothing — set both fields or neither.
+
+```python
+ChargerIdentity(
+    charger_id="CP-001",
+    tenant_id="cpo-42",
+    tenant_name="Acme Energy",
+)
+```
+
+## Shut down cleanly
+
+Stop accepting connections first, then drain. `close()` is idempotent and never raises; captures made after it are safe no-ops.
+
+```python
+import signal
+
+
+def shutdown(*_args) -> None:
+    server.close()   # stop accepting first…
+    panda.close()    # …then drain what was captured
+
+
+signal.signal(signal.SIGTERM, shutdown)
+```
+
+Pass a deadline in seconds to override the configured `drain_timeout`: `panda.close(30.0)`.
+
+<Note>
+  `close()` blocks while it drains — up to `drain_timeout`, ten seconds by default. Call it from your shutdown path, not from a request handler or the event loop.
+</Note>
+
+## Check that it's working
+
+Turn on `debug` and pass a logger to route SDK diagnostics into your application's logging:
+
+```python
+import logging
+
+panda = OCPPClient.start(
+    OCPPConfig(
+        endpoint="https://ingest.evpanda.io",
+        debug=True,
+        logger=logging.getLogger("evpanda"),
+    )
+)
+```
+
+With `debug=False` — the default — the SDK is completely silent. See [Monitoring](/operate/monitoring).
+
+## Next
+
+<Columns cols={2}>
+  <Card title="Python SDK reference" icon="book" href="/sdk/python">
+    Every class, method, and config field.
+  </Card>
+
+  <Card title="Configuration" icon="settings" href="/operate/configuration">
+    Buffer capacity, flush cadence, compression, logging.
+  </Card>
+</Columns>

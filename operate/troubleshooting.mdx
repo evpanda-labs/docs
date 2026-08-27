@@ -1,0 +1,219 @@
+---
+title: "Troubleshooting"
+description: "Symptoms, causes, and fixes for the problems that actually come up in EVPanda integrations."
+icon: "wrench"
+---
+
+Start here: **what do the counters say?** In Go, `panda.Stats()`. In Node and Python, turn on `debug` and read the log. Every symptom below maps to one of them.
+
+| What you see | Go to |
+| --- | --- |
+| Nothing at all in the dashboard | [No messages arrive](#no-messages-arrive) |
+| Some messages, but gaps | [Messages are being dropped](#messages-are-being-dropped) |
+| Only one direction | [Only half the traffic appears](#only-half-the-traffic-appears) |
+| Messages with empty bodies | [Bodies are missing](#bodies-are-missing) |
+| Odd chargers or sessions | [Chargers and sessions look wrong](#chargers-and-sessions-look-wrong) |
+| Memory or CPU concerns | [Resource questions](#resource-questions) |
+
+## No messages arrive
+
+<AccordionGroup>
+  <Accordion title="Captured is 0 — the client is inert" icon="power-off">
+    A bad `endpoint` or a missing API key makes `start` return a no-op client. Every capture silently does nothing, and the client behaves exactly like a healthy one on an idle system.
+
+    **Check:** in Go, the error returned by `StartOCPI` / `StartOCPP`. In Node and Python, set `debug: true` and restart — a config error is logged at startup.
+
+    **Fix:** confirm `EVPANDA_API_KEY` is set in the environment your service actually runs in (a common miss: set in the shell, absent from the container), and that `endpoint` is `https://ingest.evpanda.io` with no path.
+  </Accordion>
+
+  <Accordion title="Captured is 0 — the capture calls aren't running" icon="unplug">
+    The client is live but nothing is reaching it.
+
+    **Check:** put a log line next to a capture call and confirm it executes. For the OCPI adapters, confirm the middleware is actually mounted on the routes your partners hit.
+
+    **Fix:** for OCPP, verify your read loop calls `session.message()` and not just your handler. For OCPI, verify the adapter wraps the router your OCPI paths are registered on, not a sibling one.
+  </Accordion>
+
+  <Accordion title="DroppedInvalid is climbing — identity resolution fails" icon="fingerprint">
+    This is the single most common integration fault, and by far the most common cause of "the SDK isn't working".
+
+    **Check:** is your capture adapter mounted **after** the middleware that authenticates the partner? Mounted before, identity is never resolved, so every request drops.
+
+    **Fix:** move capture after auth. For a hand-written resolver, log what it returns for one real request — an empty `platformName` fails validation just as hard as a missing `platformId`. Watch for a half-set tenant pair, too: one field set and the other blank is invalid.
+  </Accordion>
+
+  <Accordion title="DroppedUndeliverable is climbing — batches aren't landing" icon="cloud-off">
+    Capture works; delivery doesn't.
+
+    **Check:** can the host reach the API at all?
+
+    ```bash
+    curl -sS https://ingest.evpanda.io/health
+    # {"status":"ok"}
+    ```
+
+    **Fix:** if that fails, it's egress — allowlist `ingest.evpanda.io` on port 443. If it succeeds, the key is the next suspect: a revoked or wrong-protocol key returns `401`, which the SDK treats as permanent and never retries. An OCPP client needs a **charger network** key; an OCPI client needs a **roaming network** key.
+  </Accordion>
+
+  <Accordion title="Everything looks healthy but the dashboard is empty" icon="eye-off">
+    **Check:** are you looking at the right network? A key belongs to exactly one network, and traffic only ever appears there.
+
+    **Fix:** confirm the key you deployed was generated in the network you're viewing. Then check the time range — the dashboard defaults to a recent window, and a service that last sent traffic yesterday won't show in it.
+  </Accordion>
+</AccordionGroup>
+
+## Messages are being dropped
+
+<AccordionGroup>
+  <Accordion title="DroppedOversize — bodies exceed the cap" icon="ruler">
+    A body or frame over `maxCaptureBytes` (64 KiB by default) drops the whole message rather than storing a truncated one.
+
+    **Fix:** raise `maxCaptureBytes`. OCPI location lists and bulk CDR pushes routinely exceed 64 KiB; 256 KiB is a reasonable ceiling for a roaming server. Remember to raise the buffer ceiling too — the Go SDK warns if `MaxBufferBytes` is below `MaxCaptureBytes`, because a full-size capture could then never fit.
+  </Accordion>
+
+  <Accordion title="DroppedEvicted — the buffer is full" icon="database">
+    Delivery has fallen behind, and the SDK is discarding its oldest captures to stay inside its memory ceiling.
+
+    **Check:** `DroppedUndeliverable` at the same time. If both are climbing, the upstream is the problem and eviction is a symptom. If only eviction is climbing, delivery is working but too slow for your volume.
+
+    **Fix:** raise the buffer ceiling to absorb longer stalls, or lower `flushInterval` so batches leave more often. See [sizing the buffer](/operate/configuration#sizing-the-buffer).
+  </Accordion>
+
+  <Accordion title="The API reports failed messages" icon="file-x">
+    The ingestion API validates each message independently and returns `{"captured": N, "failed": M}`. A non-zero `failed` means messages were rejected server-side after a successful delivery.
+
+    **Usual causes, in order of how often they bite:**
+
+    - **OCPP without a tenant pair.** The ingestion API currently requires `tenant_id` and `tenant_name` on OCPP messages even though the SDKs treat them as optional. A single-tenant CSMS that omits them loses every message this way.
+    - **An OCPI exchange with no status code.** `response_status_code` must be between 100 and 599; there is no null form.
+    - **An identity field over its length limit.** `tenantName` is 32 characters; the rest are 64.
+    - A `MESSAGE` event with no frame or no direction, or a timestamp that isn't valid RFC 3339.
+
+    **Fix:** send a constant tenant pair on OCPP, always set a status code on OCPI, and trim identity fields at the source. See the [Ingestion API reference](/reference/ingestion-api#field-limits).
+  </Accordion>
+
+  <Accordion title="DroppedPanic is non-zero" icon="bug">
+    A panic inside the SDK was recovered and swallowed so it couldn't reach your process. It should never happen.
+
+    **Fix:** report it to [support@evpanda.io](mailto:support@evpanda.io) with your SDK version and, in Go, the `LogModeDebug` output — debug mode logs the recovered fault with the operation that caused it.
+  </Accordion>
+</AccordionGroup>
+
+## Only half the traffic appears
+
+<AccordionGroup>
+  <Accordion title="Only FROM_CP frames, no TO_CP" icon="arrow-down">
+    Your read loop captures and your write path doesn't.
+
+    **Fix:** wrap every socket write in a helper that writes *then* captures with `TO_CP`, and route CSMS-initiated calls through it too. Without outbound frames the validation engine can't pair calls with results, so you lose every timeout, orphan, and duplicate-ID finding.
+  </Accordion>
+
+  <Accordion title="Only inbound OCPI, no outbound" icon="arrow-down-up">
+    The middleware is installed; the client isn't.
+
+    **Fix:** wrap the HTTP client your OCPI calls actually use. In Go, set `ocpi.RoundTripper` as the client's `Transport`. In Node, remember that axios goes through `node:http` and never `fetch` — wrapping one captures nothing from the other.
+  </Accordion>
+
+  <Accordion title="Outbound OCPI calls are captured inconsistently" icon="link-2-off">
+    Outbound capture completes when the response body is closed.
+
+    **Fix:** always close response bodies — `defer resp.Body.Close()` in Go. A response you never read is a message that never ships. Note also that a transport-level failure (DNS, connection refused, timeout) captures nothing at all: there was no exchange to record.
+  </Accordion>
+
+  <Accordion title="One partner is missing entirely" icon="user-x">
+    Every other partner arrives; one never does.
+
+    **Fix:** log what your resolver returns for that partner. A missing display name, a trailing space, or a name over 64 characters all fail validation for that partner only.
+  </Accordion>
+</AccordionGroup>
+
+## Bodies are missing
+
+<AccordionGroup>
+  <Accordion title="Inbound OCPI request bodies are empty (Node)" icon="file-x">
+    The express adapter reads the request body from `req.body`, which a body parser has to populate.
+
+    **Fix:** mount `express.json()` or `express.raw()` **before** the adapter. `express.raw()` gives you the exact bytes off the wire; `express.json()` gives a re-serialized form, which is usually fine.
+  </Accordion>
+
+  <Accordion title="Inbound OCPI request bodies are empty (Go)" icon="file-x">
+    The Go middleware records the request body as your handler reads it — nothing is buffered on your behalf.
+
+    **Fix:** if your handler never reads the body, there is nothing to capture. That's by design; a streaming handler is not forced into memory. Read the body in your handler, or capture manually with `SetRequestBody`.
+  </Accordion>
+
+  <Accordion title="Headers are missing from captured exchanges" icon="shield">
+    OCPI headers pass through an allowlist, and anything unlisted is dropped at capture — including `Authorization`, by design.
+
+    **Fix:** if you need a header that isn't in the defaults, add it with `ocpiAllowedHeaders`. It extends the list and can never shrink it. See [Data handling](/concepts/data-handling#ocpi-the-header-allowlist).
+  </Accordion>
+
+  <Accordion title="The credentials token shows as [redacted]" icon="lock">
+    That's working as intended. On any `/credentials` URL, the `token` field is masked before buffering. The rest of the exchange is captured normally.
+  </Accordion>
+</AccordionGroup>
+
+## Chargers and sessions look wrong
+
+<AccordionGroup>
+  <Accordion title="Sessions never end" icon="infinity">
+    `disconnect()` isn't running on abrupt drops.
+
+    **Fix:** attach it to the socket's close event or a `defer`/`finally`, not to your graceful shutdown path. A charge point that loses power never closes cleanly, and that is exactly the case you want recorded.
+  </Accordion>
+
+  <Accordion title="A charger's whole history is one endless session" icon="merge">
+    You are reusing one connection ID across reconnects — often by using the charger ID as the connection ID.
+
+    **Fix:** use the session handle. `connection()` mints a fresh ID per call, which is what lets the dashboard show a flapping charger as flapping.
+  </Accordion>
+
+  <Accordion title="Chargers show as offline while they're clearly online" icon="wifi-off">
+    The network's **idle timeout** is shorter than your fleet's heartbeat interval, so a healthy charger looks silent between heartbeats.
+
+    **Fix:** raise the idle timeout in the network's settings to comfortably exceed your heartbeat interval — at least twice it.
+  </Accordion>
+
+  <Accordion title="A flood of call-timeout issues" icon="timer">
+    The network's **call timeout** is shorter than what your fleet actually achieves.
+
+    **Fix:** check whether the timeouts are real first — an unanswered `CALL` is a genuine problem. If your chargers are simply slow but reliable, raise the call timeout to match observed behavior.
+  </Accordion>
+
+  <Accordion title="Duplicate chargers appear" icon="copy">
+    The same physical charger is arriving under two different IDs — usually a case difference, or one path with a URL-encoded segment and one without.
+
+    **Fix:** normalize the charger ID in your resolver before passing it to the SDK, and use the same normalization your CSMS uses everywhere else.
+  </Accordion>
+</AccordionGroup>
+
+## Resource questions
+
+<AccordionGroup>
+  <Accordion title="Memory grew after adding the SDK" icon="database">
+    Expected, and bounded. The buffer holds undelivered captures up to its ceiling: 32 MiB in Go by default, or roughly `bufferCapacity × maxCaptureBytes` worst case in Node and Python.
+
+    **Fix:** if that's more than your pod can afford, lower the ceiling. Watch `BufferBytes` before guessing — a healthy client idles far below its ceiling.
+  </Accordion>
+
+  <Accordion title="CPU rose noticeably" icon="cpu">
+    Compression is the only meaningful CPU cost, and it runs on the background worker, not your request path.
+
+    **Fix:** if zstd is too expensive for your host, switch to gzip. Lengthening `flushInterval` also compresses fewer, larger batches, which is more efficient per message.
+  </Accordion>
+
+  <Accordion title="More outbound requests than expected" icon="network">
+    A flush fires when 1,000 messages are waiting **or** the interval elapses. On a quiet service the interval dominates — a 5-second interval means about 17,000 requests a day even with almost no traffic.
+
+    **Fix:** raise `flushInterval` on low-volume services. Data is then up to that many seconds stale, which rarely matters outside debugging.
+  </Accordion>
+</AccordionGroup>
+
+## Still stuck
+
+Send [support@evpanda.io](mailto:support@evpanda.io):
+
+- Which SDK and version.
+- The network name and protocol.
+- A counter snapshot (Go) or debug log excerpt (Node, Python) covering a minute of live traffic.
+- What you expected to see in the dashboard, and what you saw instead.

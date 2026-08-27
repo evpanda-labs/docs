@@ -1,0 +1,210 @@
+---
+title: "OCPP with Node"
+sidebarTitle: "Node"
+description: "Capture OCPP traffic from a Node CSMS: start the client, open a session per socket, record every frame."
+icon: "code"
+---
+
+## Install
+
+```bash
+npm add @evpanda/sdk
+```
+
+Requires Node 18 or later. The package ships both ESM and CommonJS builds and has no required runtime dependencies.
+
+<Note>
+  The API on this page — the session handle and the OCPI adapters — is `@evpanda/sdk` **0.1.0**. If `npm` still resolves an earlier version, the session handle is not available yet; use the flat primitives shown [below](#the-flat-primitives) until 0.1.0 is published.
+</Note>
+
+### Optional: zstd compression
+
+`compression` defaults to `"zstd"`, which needs one optional peer. Without it the SDK falls back to gzip silently, so install it only if you want the smaller payloads:
+
+```bash
+npm add @mongodb-js/zstd
+```
+
+The SDK patches no globals and has no load-order requirements — import it wherever you like.
+
+## Start the client
+
+Start one client at boot and share it across your process. `start` never throws: a bad config yields an inert no-op client rather than crashing your CSMS.
+
+```ts evpanda.ts
+import { OCPPClient } from "@evpanda/sdk";
+
+// apiKey omitted → read from the EVPANDA_API_KEY environment variable.
+export const panda = OCPPClient.start({
+  endpoint: "https://ingest.evpanda.io",
+});
+```
+
+<Tip>
+  Set `debug: true` in staging. It is the only way the Node SDK reports a config problem — without it, a bad endpoint is completely silent.
+</Tip>
+
+## Capture a connection
+
+This example uses [`ws`](https://github.com/websockets/ws). The three capture calls sit in the same places whatever server you use.
+
+```ts csms.ts
+import { WebSocketServer } from "ws";
+import { panda } from "./evpanda.js";
+
+import type { IncomingMessage } from "node:http";
+import type { ChargerIdentity } from "@evpanda/sdk";
+
+const wss = new WebSocketServer({ port: 8080, handleProtocols: () => "ocpp1.6" });
+
+wss.on("connection", (socket, req) => {
+  // 1. Identify the charge point exactly as your CSMS already does.
+  const identity = resolveCharger(req);
+  if (!identity) {
+    socket.close(1008, "unknown charge point"); // your policy, not the SDK's
+    return;
+  }
+
+  // 2. Open the capture session. This records the connect and mints the
+  //    connection ID that ties this socket's frames together.
+  const session = panda.connection(identity);
+
+  // 3. One send path, so no outbound frame escapes uncaptured.
+  const send = (frame: string): void => {
+    socket.send(frame);
+    session.message(frame, "TO_CP");
+  };
+
+  socket.on("message", (raw) => {
+    const frame = raw.toString();
+
+    // Capture before you handle: a frame that breaks your handler is
+    // exactly the frame you want recorded.
+    session.message(frame, "FROM_CP");
+
+    const reply = handleFrame(identity, frame); // your CSMS logic
+    if (reply) send(reply);
+  });
+
+  // 4. Runs on clean closes and abrupt drops alike.
+  socket.on("close", () => session.disconnect());
+});
+
+/**
+ * Reads the charge point identity from the URL path:
+ * wss://csms.example/ocpp/CP-001. Use whatever your CSMS already relies
+ * on — Basic auth, a client certificate, or a database lookup.
+ */
+function resolveCharger(req: IncomingMessage): ChargerIdentity | undefined {
+  const chargerId = req.url?.split("/").pop();
+  return chargerId ? { chargerId } : undefined;
+}
+```
+
+<Warning>
+  Attach `disconnect()` to `close`, not to your own shutdown path. A charge point that loses power never closes cleanly, and a session that never ends makes a flapping charger look healthy.
+</Warning>
+
+## Capture CSMS-initiated calls
+
+Operator actions and schedulers send frames from far outside the read loop. Keep the `send` helper on your connection object so every write goes through one captured path:
+
+```ts
+type Connection = { send: (frame: string) => void };
+
+const connections = new Map<string, Connection>();
+
+wss.on("connection", (socket, req) => {
+  // …as above…
+  connections.set(identity.chargerId, { send });
+  socket.on("close", () => {
+    connections.delete(identity.chargerId);
+    session.disconnect();
+  });
+});
+
+// Elsewhere in your CSMS — an operator triggers a remote start.
+export function remoteStart(chargerId: string, payload: unknown): void {
+  const conn = connections.get(chargerId);
+  conn?.send(JSON.stringify([2, randomUUID(), "RemoteStartTransaction", payload]));
+}
+```
+
+## The flat primitives
+
+`connection()` is built on three lower-level calls. Use them when a session handle doesn't fit, or on SDK versions that don't have it yet.
+
+```ts
+import { randomUUID } from "node:crypto";
+
+const connectionId = randomUUID(); // stable per socket, fresh per reconnect
+
+panda.captureConnect({ identity, connectionId });
+
+panda.captureMessage({
+  identity,
+  connectionId,
+  data: frame,          // string or Uint8Array
+  direction: "FROM_CP",
+});
+
+panda.captureDisconnect({ identity, connectionId });
+```
+
+`captureMessage` requires both `data` and `direction`, and drops the message if either is missing. Connect and disconnect ignore both.
+
+## Multi-tenant CSMS
+
+Add the tenant pair to the identity at handshake. It is optional but all-or-nothing — set both fields or neither.
+
+```ts
+const identity = {
+  chargerId: "CP-001",
+  tenantId: "cpo-42",
+  tenantName: "Acme Energy",
+};
+```
+
+## Shut down cleanly
+
+Stop accepting connections first, then drain. `close()` is idempotent and never throws; captures made after it are safe no-ops.
+
+```ts
+process.on("SIGTERM", async () => {
+  wss.close();          // stop accepting first…
+  await panda.close();  // …then drain what was captured
+  process.exit(0);
+});
+```
+
+Pass a deadline in milliseconds to override the configured `drainTimeout`: `await panda.close(30_000)`.
+
+<Warning>
+  `close()` returns a promise. Awaiting it is what makes the difference between draining the buffer and discarding it — `process.exit()` without the `await` throws away everything that hasn't shipped.
+</Warning>
+
+## Check that it's working
+
+Turn on `debug` and pass your own logger to route SDK diagnostics wherever your application logs go:
+
+```ts
+export const panda = OCPPClient.start({
+  endpoint: "https://ingest.evpanda.io",
+  debug: process.env.NODE_ENV !== "production",
+  logger: pino({ name: "evpanda" }),
+});
+```
+
+With `debug` off — the default — the SDK is completely silent. See [Monitoring](/operate/monitoring).
+
+## Next
+
+<Columns cols={2}>
+  <Card title="Node SDK reference" icon="book" href="/sdk/node">
+    Every export, method, and config option.
+  </Card>
+
+  <Card title="Configuration" icon="settings" href="/operate/configuration">
+    Buffer capacity, flush cadence, compression, logging.
+  </Card>
+</Columns>

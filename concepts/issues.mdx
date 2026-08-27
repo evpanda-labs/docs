@@ -1,0 +1,117 @@
+---
+title: "Issues and validation"
+description: "How EVPanda turns captured traffic into grouped, attributable findings you can act on."
+icon: "triangle-alert"
+---
+
+Capturing traffic is only half the product. Every message EVPanda stores is run through a protocol-aware validation pipeline, and what it finds becomes an **issue**.
+
+## What an issue is
+
+An issue is a finding about one message, grouped with every other occurrence of the same finding. A charger that sends a malformed `StatusNotification` ten thousand times produces one issue with a count of ten thousand — not ten thousand rows.
+
+Each issue group carries:
+
+| | |
+| --- | --- |
+| **Title and description** | What is wrong, in plain language |
+| **Severity** | `error`, `warning`, or `anomaly` |
+| **Where it was found** | The validation stage and the part of the message |
+| **Who it affects** | The charger or roaming platform, plus tenant and charger counts |
+| **Trend** | Occurrences over the last 7 days, and when it was last seen |
+| **Evidence** | A link straight to the messages that triggered it |
+
+## Severity
+
+<Columns cols={3}>
+  <Card title="Error" icon="circle-x" horizontal>
+    The message violates the protocol. Something is objectively wrong and a conforming implementation would not have sent it.
+  </Card>
+
+  <Card title="Warning" icon="triangle-alert" horizontal>
+    The message is legal but questionable — a missing optional field the spec says you *should* send, a value that looks wrong.
+  </Card>
+
+  <Card title="Anomaly" icon="activity" horizontal>
+    Nothing in the message breaks a rule, but the behavior around it does. This is the class that catches "online but not working".
+  </Card>
+</Columns>
+
+## Where issues come from
+
+Validation runs in stages, and each issue records the stage that produced it. The stage is the fastest way to tell a broken charger from a broken integration.
+
+| Stage | What it checks |
+| --- | --- |
+| `envelope_parse` | The frame or exchange decodes at all: valid JSON, right array shape, known message type |
+| `routing` | *(OCPI)* The request targets a real OCPI module and endpoint with an allowed method |
+| `schema_validation` | Fields, types, and required properties for the action or entity in question |
+| `cross_field_validation` | Values that are individually legal but contradict each other in the same message |
+| `exchange` | The request and its response, read together |
+| `synchronicity` | *(OCPP)* Call and result pairing across the connection — timeouts, duplicates, orphans |
+| `pagination` | *(OCPI)* Link headers, limits, and total counts on paged endpoints |
+| `anomalies` | Behavioral checks that go beyond the specification |
+
+Issues also record the **part** of the message they came from — `envelope`, `req_body`, `res_body`, `req_header`, `res_header`, or `req_url` — so you know where to look without reading the whole payload.
+
+## Examples of what gets caught
+
+<Tabs>
+  <Tab title="OCPP">
+    | Finding | Stage | Why it matters |
+    | --- | --- | --- |
+    | `call_response_timeout` | synchronicity | You sent a `CALL` and the charge point never answered within the network's call timeout. The charger looks online and is not responding. |
+    | `unanswered_call_on_disconnect` | synchronicity | The socket dropped with calls still outstanding — work you believed was accepted never happened. |
+    | `duplicate_unique_id` | synchronicity | Two in-flight calls reused one message ID, so responses can't be matched reliably. |
+    | `response_already_answered` | synchronicity | A second result arrived for a call that was already resolved. |
+    | `message_type_code` | envelope_parse | The frame isn't a valid OCPP-J `CALL`, `CALLRESULT`, or `CALLERROR`. |
+    | `known_action` | envelope_parse | The action isn't in OCPP 1.6 — usually a vendor extension or a typo. |
+    | `required_field` | schema_validation | A field the action requires is missing from the payload. |
+    | `payload_schema` | schema_validation | A field is present but the wrong type, format, or out of range. |
+
+    Cross-field rules catch the mistakes schemas can't: a `TxProfile` charging profile set on connector `0`, a `StatusNotification` reporting a connector-specific status on connector `0`, a `connectorId` outside the range the charger reported at boot.
+  </Tab>
+
+  <Tab title="OCPI">
+    | Finding | Stage | Why it matters |
+    | --- | --- | --- |
+    | `known_endpoint` | routing | The request targets a path that isn't part of OCPI 2.2.1. |
+    | `method_allowed` | routing | The method isn't valid for that endpoint — a `PUT` where the module only accepts `PATCH`. |
+    | `ocpi_envelope` | schema_validation | The response body isn't a well-formed OCPI envelope, or is missing `status_code`. |
+    | `error_code` | schema_validation | The OCPI `status_code` doesn't match the HTTP status or the situation it describes. |
+    | `required_field` | schema_validation | The entity is missing a field the module requires. |
+    | `payload_schema` | schema_validation | A field has the wrong type or an invalid value — a bad country code, a malformed timestamp. |
+
+    Because an OCPI capture holds the whole request/response pair, EVPanda can validate the exchange as a unit: a `200 OK` carrying an error envelope, or a response body that doesn't match what the request asked for.
+  </Tab>
+</Tabs>
+
+## Attribution
+
+Every issue is tied to the charger or roaming platform whose message produced it, and to that entity's tenant. This is the difference between "we have errors" and "this partner's CDR push has been failing since Tuesday".
+
+Because captured traffic records both directions, EVPanda can also tell you which **side** was at fault: a malformed request you sent is your bug, a malformed response you received is theirs.
+
+## Tags
+
+While validating, the pipeline extracts **tags** — the identifiers that matter inside a payload, pulled from the URL, headers, body, or connection. Session IDs, location IDs, transaction IDs, and token IDs all become searchable.
+
+That is what makes the global search box useful during an incident: paste a session ID from a customer complaint and get every message across both protocols that touched it.
+
+## Controlling what gets reported
+
+Two per-network settings shape the issue stream. Both live under the network's **Settings** tab.
+
+<ResponseField name="Anomaly detection" type="boolean" default="true">
+  Turns the behavioral checks on and off. Leave it on — this is the class of finding that catches problems your own monitoring won't.
+</ResponseField>
+
+<ResponseField name="Reject unknown JSON fields" type="boolean" default="false">
+  Reports fields the protocol doesn't define. Useful when certifying a new partner or charger model, noisy when your fleet uses vendor extensions in daily operation.
+</ResponseField>
+
+For charger networks, the **call timeout** setting decides how long a `CALL` may go unanswered before it counts as a timeout, and the **idle timeout** decides how long a charger may stay silent before it is shown as offline. Tune both to your fleet's real behavior — a heartbeat interval of ten minutes with a five-minute idle timeout will report your whole fleet as flapping.
+
+<Tip>
+  Start with severity. Work `error` groups by occurrence count first: the top few usually account for most of the volume, and fixing one charger model or one partner integration often clears thousands of occurrences at once.
+</Tip>

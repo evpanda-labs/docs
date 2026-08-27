@@ -1,53 +1,135 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "theme": "maple",
+  "name": "EVPanda",
+  "description": "Observability for EV charging networks. Capture, validate, and search every OCPP and OCPI message your platform exchanges.",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#4F46E5",
+    "light": "#A5B4FC",
+    "dark": "#6366F1"
+  },
+  "appearance": {
+    "default": "dark"
+  },
+  "icons": {
+    "library": "lucide"
   },
   "favicon": "/favicon.svg",
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg",
+    "href": "https://evpanda.io"
+  },
   "navigation": {
-    "pages": [
+    "tabs": [
       {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
+        "tab": "Documentation",
+        "icon": "book-open",
+        "groups": [
+          {
+            "group": "Get started",
+            "icon": "rocket",
+            "pages": [
+              "index",
+              "quickstart",
+              "how-it-works"
+            ]
+          },
+          {
+            "group": "Core concepts",
+            "icon": "shapes",
+            "pages": [
+              "concepts/networks",
+              "concepts/identity",
+              "concepts/capture-model",
+              "concepts/issues",
+              "concepts/data-handling"
+            ]
+          },
+          {
+            "group": "OCPP integration",
+            "icon": "plug-zap",
+            "pages": [
+              "ocpp/overview",
+              "ocpp/go",
+              "ocpp/node",
+              "ocpp/python"
+            ]
+          },
+          {
+            "group": "OCPI integration",
+            "icon": "network",
+            "pages": [
+              "ocpi/overview",
+              "ocpi/go",
+              "ocpi/node",
+              "ocpi/python"
+            ]
+          },
+          {
+            "group": "Run in production",
+            "icon": "settings",
+            "pages": [
+              "operate/configuration",
+              "operate/delivery",
+              "operate/monitoring",
+              "operate/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "SDK reference",
+        "icon": "code",
+        "groups": [
+          {
+            "group": "SDKs",
+            "pages": [
+              "sdk/go",
+              "sdk/node",
+              "sdk/python"
+            ]
+          },
+          {
+            "group": "Platform",
+            "pages": [
+              "reference/ingestion-api"
+            ]
+          }
         ]
       }
     ],
     "global": {
       "anchors": [
         {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
+          "anchor": "Dashboard",
+          "href": "https://app.evpanda.io",
+          "icon": "layout-dashboard"
         },
         {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
+          "anchor": "GitHub",
+          "href": "https://github.com/evpanda-labs",
+          "icon": "github"
+        },
+        {
+          "anchor": "Support",
+          "href": "mailto:support@evpanda.io",
+          "icon": "life-buoy"
         }
       ]
     }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
   },
   "navbar": {
     "links": [
       {
         "label": "Support",
-        "href": "mailto:hi@mintlify.com"
+        "href": "mailto:support@evpanda.io"
       }
     ],
     "primary": {
       "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "label": "Open dashboard",
+      "href": "https://app.evpanda.io"
     }
   },
   "contextual": {
@@ -56,7 +138,6 @@
       "view",
       "chatgpt",
       "claude",
-      "perplexity",
       "mcp",
       "cursor",
       "vscode"
@@ -64,9 +145,49 @@
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+      "website": "https://evpanda.io",
+      "github": "https://github.com/evpanda-labs"
+    },
+    "links": [
+      {
+        "header": "Product",
+        "items": [
+          {
+            "label": "Dashboard",
+            "href": "https://app.evpanda.io"
+          },
+          {
+            "label": "Website",
+            "href": "https://evpanda.io"
+          }
+        ]
+      },
+      {
+        "header": "SDKs",
+        "items": [
+          {
+            "label": "Go",
+            "href": "https://github.com/evpanda-labs/evpanda-go"
+          },
+          {
+            "label": "Node",
+            "href": "https://github.com/evpanda-labs/evpanda-node"
+          },
+          {
+            "label": "Python",
+            "href": "https://github.com/evpanda-labs/evpanda-py"
+          }
+        ]
+      },
+      {
+        "header": "Support",
+        "items": [
+          {
+            "label": "support@evpanda.io",
+            "href": "mailto:support@evpanda.io"
+          }
+        ]
+      }
+    ]
   }
 }
