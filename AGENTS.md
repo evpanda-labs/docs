@@ -27,18 +27,21 @@ Where the ingestion API and an SDK disagree, document the behavior a customer wi
 ## Structure
 
 ```
-index.mdx            Introduction
-quickstart.mdx       Zero to first captured message
-how-it-works.mdx     Platform architecture
-concepts/            Networks, identity, capture model, issues, data handling
-ocpp/                OCPP integration: overview + one page per language
-ocpi/                OCPI integration: overview + one page per language
-operate/             Configuration, delivery, monitoring, troubleshooting
-sdk/                 Per-language API reference
-reference/           Ingestion API (the raw HTTP contract)
+index.mdx                        Introduction: what EVPanda is, how it works, issues
+concepts/networks.mdx            Networks and API keys
+concepts/identity.mdx            Per-message identity and tenants
+concepts/capture-model.mdx       What gets captured, redaction, limits, retention
+integration/getting-started.mdx  Shared SDK surface: install, config, delivery, monitoring, troubleshooting
+integration/ocpp.mdx             OCPP CSMS integration, end to end
+integration/ocpi.mdx             OCPI server integration, end to end
+style.css                        Custom CSS (auto-included by Mintlify)
 ```
 
-Guides live under `ocpp/` and `ocpi/` with one page per language, because the integration code genuinely differs per language. Shared prose — concepts, configuration, operations — uses `<CodeGroup>` with Go, Node, and Python tabs in that order.
+Seven pages, deliberately. The sidebar is a flat list — a bare Introduction plus two groups — with no tabs and no icons.
+
+**One page per protocol, not per language.** `integration/ocpp.mdx` and `integration/ocpi.mdx` each carry the whole integration, with every snippet in a `<CodeGroup>` tabbed Go / Node / Python **in that order**. Where an SDK genuinely differs — Node needs a body parser, Python has no OCPI adapters, Go needs a write mutex — say so in a named callout or a "Per-SDK notes" accordion rather than forking the page.
+
+Anything shared by both protocols belongs in `integration/getting-started.mdx`, not duplicated into each guide.
 
 ## Terminology
 

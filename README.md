@@ -8,15 +8,10 @@ Built with [Mintlify](https://mintlify.com). Pages are MDX; site configuration l
 
 | Path | Contents |
 | --- | --- |
-| `index.mdx` | Introduction — what EVPanda is and what it gives you |
-| `quickstart.mdx` | Network → API key → SDK → first captured message |
-| `how-it-works.mdx` | Platform architecture and the path a message takes |
-| `concepts/` | Networks and API keys, identity, capture model, issues, data handling |
-| `ocpp/` | Instrumenting an OCPP CSMS: overview, Go, Node, Python |
-| `ocpi/` | Instrumenting an OCPI server: overview, Go, Node, Python |
-| `operate/` | Configuration, delivery, monitoring, troubleshooting |
-| `sdk/` | Per-language API reference |
-| `reference/` | The ingestion API HTTP contract |
+| `index.mdx` | Introduction — what EVPanda is, how it works, and what issues are |
+| `concepts/` | Networks and API keys, identity, what gets captured |
+| `integration/` | Getting started, plus one end-to-end guide per protocol |
+| `style.css` | Custom CSS, auto-included by Mintlify on every page |
 
 ## Local development
 

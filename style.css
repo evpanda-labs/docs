@@ -9,3 +9,11 @@
 #sidebar .sidebar-group > li > a:not([aria-current="page"]) {
   border-left-color: transparent;
 }
+
+/* Sidebar footer.
+   The maple theme repeats `navbar.primary` as a pinned list at the bottom of
+   the sidebar, below a divider. The button belongs in the topbar only, so hide
+   the footer — it is the sidebar's one direct <ul> child. */
+#sidebar > ul {
+  display: none;
+}

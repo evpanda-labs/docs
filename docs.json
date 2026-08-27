@@ -21,107 +21,31 @@
     "href": "https://evpanda.io"
   },
   "navigation": {
-    "tabs": [
+    "pages": [
+      "index",
       {
-        "tab": "Documentation",
-        "icon": "book-open",
-        "groups": [
-          {
-            "group": "Get started",
-            "pages": [
-              "index",
-              "quickstart",
-              "how-it-works"
-            ]
-          },
-          {
-            "group": "Core concepts",
-            "pages": [
-              "concepts/networks",
-              "concepts/identity",
-              "concepts/capture-model",
-              "concepts/issues",
-              "concepts/data-handling"
-            ]
-          },
-          {
-            "group": "OCPP integration",
-            "pages": [
-              "ocpp/overview",
-              "ocpp/go",
-              "ocpp/node",
-              "ocpp/python"
-            ]
-          },
-          {
-            "group": "OCPI integration",
-            "pages": [
-              "ocpi/overview",
-              "ocpi/go",
-              "ocpi/node",
-              "ocpi/python"
-            ]
-          },
-          {
-            "group": "Run in production",
-            "pages": [
-              "operate/configuration",
-              "operate/delivery",
-              "operate/monitoring",
-              "operate/troubleshooting"
-            ]
-          }
+        "group": "Core concepts",
+        "pages": [
+          "concepts/networks",
+          "concepts/identity",
+          "concepts/capture-model"
         ]
       },
       {
-        "tab": "SDK reference",
-        "icon": "code",
-        "groups": [
-          {
-            "group": "SDKs",
-            "pages": [
-              "sdk/go",
-              "sdk/node",
-              "sdk/python"
-            ]
-          },
-          {
-            "group": "Platform",
-            "pages": [
-              "reference/ingestion-api"
-            ]
-          }
+        "group": "SDK integration",
+        "pages": [
+          "integration/getting-started",
+          "integration/ocpp",
+          "integration/ocpi"
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Dashboard",
-          "href": "https://app.evpanda.io"
-        },
-        {
-          "anchor": "GitHub",
-          "href": "https://github.com/evpanda-labs"
-        },
-        {
-          "anchor": "Support",
-          "href": "mailto:support@evpanda.io"
-        }
-      ]
-    }
+    ]
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:support@evpanda.io"
-      }
-    ],
     "primary": {
       "type": "button",
-      "label": "Open dashboard",
-      "href": "https://app.evpanda.io"
+      "label": "Get started",
+      "href": "/integration/getting-started"
     }
   },
   "contextual": {

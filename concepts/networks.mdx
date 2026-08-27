@@ -1,5 +1,6 @@
 ---
 title: "Networks and API keys"
+sidebarTitle: "Networks"
 description: "How EVPanda organizes your systems into networks, and how the SDK authenticates against one."
 ---
 
@@ -44,7 +45,7 @@ Each network has settings that shape how its traffic is validated. Find them und
 </ResponseField>
 
 <ResponseField name="Anomaly detection" type="boolean" default="true">
-  Enables the behavioral checks that flag traffic which breaks no protocol rule but signals a real problem. See [Issues and validation](/concepts/issues).
+  Enables the behavioral checks that flag traffic which breaks no protocol rule but signals a real problem. See [Issues](/#issues).
 </ResponseField>
 
 <ResponseField name="Call timeout" type="integer" default="30">
@@ -108,7 +109,7 @@ https://ingest.evpanda.io
 | OCPP client | `POST /v1/ocpp` |
 | OCPI client | `POST /v1/ocpi` |
 
-You never build these paths yourself — set `endpoint` to the base URL and the SDK does the rest. See the [Ingestion API reference](/reference/ingestion-api) if you need the raw contract.
+You never build these paths yourself — set `endpoint` to the base URL and the SDK does the rest.
 
 ## Next
 

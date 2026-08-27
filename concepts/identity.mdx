@@ -108,7 +108,7 @@ If you have a single operator, leave them out entirely. You can start sending th
 <Warning>
   **OCPP is the exception today.** The SDKs treat the tenant pair as optional for both protocols, but the ingestion API currently *requires* it on OCPP messages and rejects those that omit it — server-side, after a successful delivery, so nothing in the SDK reports it.
 
-  Until that is relaxed, send a tenant pair on OCPP even in a single-tenant CSMS. A constant value such as your own operator name is fine. See the [Ingestion API reference](/reference/ingestion-api).
+  Until that is relaxed, send a tenant pair on OCPP even in a single-tenant CSMS. A constant value such as your own operator name is fine. See [Getting started](/integration/getting-started#troubleshooting).
 </Warning>
 
 ## Choosing good identifiers
@@ -148,7 +148,7 @@ Dropping is deliberate: a message EVPanda can't attribute would arrive as an orp
 | One partner drops | Your resolver returns an empty `platformName` for them |
 | Random messages drop | A half-set tenant pair — one field populated, the other blank |
 
-In Go, read `panda.Stats().DroppedInvalid`. In Node and Python, turn on `debug`. See [Monitoring](/operate/monitoring).
+In Go, read `panda.Stats().DroppedInvalid`. In Node and Python, turn on `debug`. See [Getting started](/integration/getting-started#counters-and-logs).
 
 <Note>
   The HTTP adapters treat "no identity" as "don't capture", not as an error. A request the adapter can't attribute is served exactly as it would have been — your partners never see a difference.
