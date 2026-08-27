@@ -1,0 +1,19 @@
+/* EVPanda docs — custom styles.
+   Mintlify includes any .css file in the content directory on every page,
+   so this needs no reference from docs.json. */
+
+/* Sidebar navigation.
+   Mintlify draws a left border on every sidebar link, which reads as one
+   continuous vertical rail running down the menu. Hide it. The border width
+   stays, so nothing shifts, and the current page keeps its coloured marker. */
+#sidebar .sidebar-group > li > a:not([aria-current="page"]) {
+  border-left-color: transparent;
+}
+
+/* Sidebar footer.
+   The maple theme repeats `navbar.primary` as a pinned list at the bottom of
+   the sidebar, below a divider. The button belongs in the topbar only, so hide
+   the footer — it is the sidebar's one direct <ul> child. */
+#sidebar > ul {
+  display: none;
+}
