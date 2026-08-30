@@ -1,11 +1,9 @@
 ---
 title: "Getting started"
-description: "How the EVPanda SDKs work, which languages are supported, and everything that is the same whichever protocol you instrument."
+description: "Install an SDK, start a client, and confirm it is capturing."
 ---
 
-Instrumenting a service takes three things: a network and an API key from the dashboard, an SDK in your process, and a few capture calls where you already handle protocol traffic.
-
-This page covers everything the two protocols share. When you're ready to write code, go to the guide for the protocol your service speaks.
+Everything on this page is the same for both protocols. When you are ready to write capture code, go to the guide for the protocol your service speaks.
 
 <Columns cols={2}>
   <Card title="OCPP server" icon="plug-zap" href="/integration/ocpp" horizontal>
@@ -17,447 +15,387 @@ This page covers everything the two protocols share. When you're ready to write 
   </Card>
 </Columns>
 
-## Supported languages
+## Install
 
-| SDK | Package | Requires | Status |
-| --- | --- | --- | --- |
-| **Go** | `github.com/evpanda-labs/evpanda-go` | Go 1.24+ | Published, stable |
-| **Node** | `@evpanda/sdk` | Node 18+ | `0.1.0` pending publish |
-| **Python** | `evpanda` | Python 3.12+ | Preview, install from source |
+| SDK | Package | Requires |
+| --- | --- | --- |
+| Go | `github.com/evpanda-labs/evpanda-go` | Go 1.24+ |
+| Node | `@evpanda/sdk` | Node 22.15+ |
+| Python | `evpanda` | Python 3.12+ |
 
 <CodeGroup>
-  ```bash Go
-  go get github.com/evpanda-labs/evpanda-go
-  ```
+```bash Go
+go get github.com/evpanda-labs/evpanda-go
+```
 
-  ```bash Node
-  npm add @evpanda/sdk
-  ```
+```bash Node
+npm install @evpanda/sdk
+```
 
-  ```bash Python
-  pip install "evpanda[zstd]"
-  ```
+```bash Python
+pip install evpanda
+```
 </CodeGroup>
 
-<Note>
-  **Availability, honestly.** The Go SDK is published and is the reference implementation the others track.
+Every SDK compresses batches with zstd. Go bundles it through one dependency, Node uses `node:zlib` (which is why it needs Node 22.15, where zstd landed), and Python brings `zstandard`.
 
-  The npm registry currently serves an older `@evpanda/sdk`; the API documented here is `0.1.0`. Until it ships, the OCPP session handle and the OCPI adapters are not available — the flat capture calls are.
+Optional extras, needed only for the adapter you use:
 
-  The Python SDK is not on PyPI yet. Install it from source, and note it has no HTTP adapters:
+<CodeGroup>
+```bash Go
+# none: the ocpi adapters are stdlib only
+```
 
-  ```bash
-  pip install "git+https://github.com/evpanda-labs/evpanda-py"
-  ```
-</Note>
+```bash Node
+# express, axios and ws are optional peers
+npm install express axios ws
+```
 
-<Card title="Source and API reference" icon="github" horizontal>
-  [evpanda-go](https://github.com/evpanda-labs/evpanda-go) · [pkg.go.dev](https://pkg.go.dev/github.com/evpanda-labs/evpanda-go) · [evpanda-node](https://github.com/evpanda-labs/evpanda-node) · [evpanda-py](https://github.com/evpanda-labs/evpanda-py)
-</Card>
-
-### Optional compression dependency
-
-Compression defaults to zstd, which needs one optional package in Node and Python. Without it the SDK falls back to gzip silently.
-
-| SDK | To get zstd |
-| --- | --- |
-| Go | Included |
-| Node | `npm add @mongodb-js/zstd` |
-| Python | `pip install "evpanda[zstd]"` |
-
-## What the SDK does
-
-The SDK is passive. It observes traffic your application already handles — it never sits in the request path, never blocks on the network, and never fails your process if EVPanda is unreachable.
-
-<AccordionGroup>
-  <Accordion title="Capture never blocks your application" icon="gauge">
-    A capture call validates the identity, enforces a size cap, redacts secrets, copies the payload, writes it to an in-process buffer, and returns. No I/O, no locks your code contends on. Delivery happens on a background worker.
-  </Accordion>
-
-  <Accordion title="Memory is capped, and the SDK drops its own data first" icon="database">
-    The buffer has a ceiling you set. When delivery stalls the SDK evicts its oldest captures rather than growing without limit or applying backpressure to your service.
-  </Accordion>
-
-  <Accordion title="Secrets never leave your process" icon="lock">
-    OCPI headers pass through an allowlist before anything is buffered, so `Authorization`, `Cookie`, and API keys are dropped at capture. Tokens in OCPI `/credentials` bodies are masked. See [What gets captured](/concepts/capture-model).
-  </Accordion>
-
-  <Accordion title="A bad config can't crash your boot" icon="shield">
-    If the endpoint or API key is wrong the client starts **inert**: every capture is a no-op and the error is reported to you. Your service still boots.
-  </Accordion>
-</AccordionGroup>
+```bash Python
+pip install 'evpanda[httpx]'     # httpx transports
+pip install 'evpanda[requests]'  # requests adapter
+```
+</CodeGroup>
 
 ## Get an API key
 
-A network is the container for everything EVPanda records about one of your systems, and an API key is scoped to exactly one network.
-
 <Steps>
   <Step title="Create a network">
-    In [app.evpanda.io](https://app.evpanda.io), create a **Charger network** for an OCPP CSMS or a **Roaming network** for an OCPI server. One per system, per environment.
+    In the dashboard, create a **Charger network** for an OCPP CSMS or a **Roaming network** for an OCPI server.
   </Step>
 
   <Step title="Generate a key">
-    Open the network's **Settings** tab and generate a key. The raw value — `evp_sk_…` — is shown once. EVPanda stores only a hash of it.
+    Under the network's **Settings** tab. The raw value is shown once.
   </Step>
 
-  <Step title="Put it in the environment">
+  <Step title="Export it">
     ```bash
     export EVPANDA_API_KEY="evp_sk_..."
     ```
-
-    Every SDK falls back to `EVPANDA_API_KEY` when no key is passed in code, which keeps the key out of your source.
   </Step>
 </Steps>
 
-See [Networks](/concepts/networks) for network settings, key rotation, and what a key can and cannot do.
+See [Networks](/concepts/networks) for settings, scoping, and rotation.
 
 ## Start a client
 
-The protocol is the client. `OCPI` and `OCPP` have separate client types, separate configs, and separate API keys. Start one at boot and share it across your process — each client runs its own background worker and its own buffer.
+The protocol is the client. Start one at boot and share it across your process; each client runs one background worker and one buffer.
+
+**The API key is the only thing you must supply.** `endpoint` defaults to the production ingestion API, so leave it unset unless you are pointing at another environment.
 
 <CodeGroup>
-  ```go Go
-  import evpanda "github.com/evpanda-labs/evpanda-go"
+```go Go
+import evpanda "github.com/evpanda-labs/evpanda-go"
 
-  // APIKey omitted → read from EVPANDA_API_KEY.
-  panda, err := evpanda.StartOCPP(evpanda.OCPPConfig{
-      BaseConfig: evpanda.BaseConfig{Endpoint: "https://ingest.evpanda.io"},
-  })
-  if err != nil {
-      log.Printf("evpanda: %v (running inert)", err)
-  }
-  defer func() { _ = panda.Close() }()
-  ```
+// APIKey comes from EVPANDA_API_KEY; Endpoint defaults to production.
+panda, err := evpanda.StartOCPP(evpanda.OCPPConfig{})
+if err != nil {
+    log.Printf("evpanda: %v (running inert)", err)
+}
+defer func() { _ = panda.Close() }()
+```
 
-  ```ts Node
-  import { OCPPClient } from "@evpanda/sdk";
+```ts Node
+import { startOCPP } from "@evpanda/sdk";
 
-  // apiKey omitted → read from EVPANDA_API_KEY.
-  export const panda = OCPPClient.start({
-    endpoint: "https://ingest.evpanda.io",
-    debug: process.env.NODE_ENV !== "production",
-  });
-  ```
+// apiKey comes from EVPANDA_API_KEY; endpoint defaults to production.
+export const panda = startOCPP();
+if (panda.error) log.warn(`${panda.error.message} (running inert)`);
+```
 
-  ```python Python
-  from evpanda import OCPPClient, OCPPConfig
+```python Python
+import evpanda
 
-  # api_key omitted → read from EVPANDA_API_KEY.
-  panda = OCPPClient.start(
-      OCPPConfig(endpoint="https://ingest.evpanda.io", debug=True)
-  )
-  ```
+# api_key comes from EVPANDA_API_KEY; endpoint defaults to production.
+panda = evpanda.start_ocpp()
+if panda.error:
+    log.warning("%s (running inert)", panda.error)
+```
 </CodeGroup>
 
-Swap `OCPP` for `OCPI` if that's what your service speaks. Both clients are safe for concurrent use.
+Swap `OCPP` for `OCPI` if that is what your service speaks. Both clients are safe for concurrent use.
+
+### A bad config never crashes your boot
+
+`start` always returns a usable client. If the config is bad you get an inert one that captures nothing, and the reason comes back as an error (Go) or on `.error` (Node, Python).
+
+Only two things can fail: a missing API key and a malformed endpoint. Both are matchable, which is useful because a missing key is usually a deployment problem while a bad endpoint is a code one.
+
+<CodeGroup>
+```go Go
+panda, err := evpanda.StartOCPI(cfg)
+if errors.Is(err, evpanda.ErrAPIKey) {
+    log.Fatal("EVPANDA_API_KEY is not set in this environment")
+}
+if err != nil {
+    log.Printf("evpanda: %v (running inert)", err)
+}
+```
+
+```ts Node
+import { ApiKeyError, startOCPI } from "@evpanda/sdk";
+
+const panda = startOCPI(config);
+if (panda.error instanceof ApiKeyError) {
+  throw new Error("EVPANDA_API_KEY is not set in this environment");
+}
+if (panda.error) log.warn(`${panda.error.message} (running inert)`);
+```
+
+```python Python
+panda = evpanda.start_ocpi(config)
+if isinstance(panda.error, evpanda.APIKeyError):
+    raise SystemExit("EVPANDA_API_KEY is not set in this environment")
+if panda.error:
+    log.warning("%s (running inert)", panda.error)
+```
+</CodeGroup>
 
 <Warning>
-  **Log the startup error.** An inert client behaves exactly like a healthy one on an idle system — silent, no panics, no failures — so a swallowed config error looks identical to "no traffic yet".
-
-  In Go the error comes back from `Start*`. In Node and Python nothing is reported unless `debug` is on, which is why both examples above turn it on.
+  Log the startup fault. An inert client behaves exactly like a healthy one on an idle system, so a swallowed config error looks identical to "no traffic yet".
 </Warning>
 
 ## Configuration
 
-`endpoint` and `apiKey` are hard-required. Every other option is a **tunable**: an out-of-range value falls back to its default and says so in the logs, rather than failing.
+Every field except the API key takes its default when left at its zero value. An out of range value falls back to that default with a warning rather than failing.
 
-| Purpose | Go | Node | Python | Default |
-| --- | --- | --- | --- | --- |
-| Ingestion base URL | `Endpoint` | `endpoint` | `endpoint` | required |
-| API key | `APIKey` | `apiKey` | `api_key` | `$EVPANDA_API_KEY` |
-| Buffer ceiling | `MaxBufferBytes` | `bufferCapacity` | `buffer_capacity` | 32 MiB / 10,000 msgs |
-| Per-capture cap | `MaxCaptureBytes` | `maxCaptureBytes` | `max_capture_bytes` | 65536 bytes |
-| Flush cadence | `FlushInterval` | `flushInterval` | `flush_interval` | 5s / 5000ms / 5.0s |
-| Drain deadline | `DrainTimeout` | `drainTimeout` | `drain_timeout` | 10s, minimum 5s |
-| Compression | `Compression` | `compression` | `compression` | `zstd` |
-| Log verbosity | `LogMode` | `debug` | `debug` | see below |
-| Log destination | `Logger` | `logger` | `logger` | `slog.Default()` / `console` |
-| Extra OCPI headers | `OCPIAllowedHeaders` | `ocpiAllowedHeaders` | `ocpi_allowed_headers` | none |
+| Go | Node | Python | Default |
+| --- | --- | --- | --- |
+| `Endpoint` | `endpoint` | `endpoint` | `https://ingest.evpanda.io` |
+| `APIKey` | `apiKey` | `api_key` | `$EVPANDA_API_KEY`, required |
+| `MaxBufferBytes` | `maxBufferBytes` | `max_buffer_bytes` | 32 MiB, minimum 64 KiB |
+| `MaxCaptureBytes` | `maxCaptureBytes` | `max_capture_bytes` | 64 KiB |
+| `FlushInterval` | `flushInterval` | `flush_interval` | 5s / 5000ms / 5.0s |
+| `DrainTimeout` | `drainTimeout` | `drain_timeout` | 10s, minimum 5s |
+| `LogMode` | `logMode` | `log_mode` | `errors` |
+| `Logger` | `logger` | `logger` | `slog.Default()` / `console` / `getLogger("evpanda")` |
+| `OCPIAllowedHeaders` | `ocpiAllowedHeaders` | `ocpi_allowed_headers` | none, OCPI only |
 
-<Tabs>
-  <Tab title="Go">
-    Intervals are `time.Duration`. The buffer is capped **by bytes**, so the number you set is the memory footprint, not an estimate of it.
+Go takes `time.Duration`, Node takes milliseconds, Python takes float seconds.
 
-    ```go
-    evpanda.StartOCPI(evpanda.OCPIConfig{
-        BaseConfig: evpanda.BaseConfig{
-            Endpoint:       "https://ingest.evpanda.io",
-            MaxBufferBytes: 64 << 20, // 64 MiB
-            FlushInterval:  2 * time.Second,
-            LogMode:        evpanda.LogModeDebug,
-        },
-        OCPIAllowedHeaders: []string{"x-trace-id"},
-    })
-    ```
+<CodeGroup>
+```go Go
+panda, err := evpanda.StartOCPI(evpanda.OCPIConfig{
+    BaseConfig: evpanda.BaseConfig{
+        MaxBufferBytes: 64 << 20,
+        FlushInterval:  2 * time.Second,
+        LogMode:        evpanda.LogModeDebug,
+    },
+    OCPIAllowedHeaders: []string{"x-trace-id"},
+})
+```
 
-    `LogMode` is `LogModeSilent`, `LogModeErrors` (default), or `LogModeDebug`. The `EVPANDA_LOG` environment variable sets it without a code change; an explicit config value wins.
-  </Tab>
+```ts Node
+const panda = startOCPI({
+  maxBufferBytes: 64 * 1024 * 1024,
+  flushInterval: 2_000,
+  logMode: "debug",
+  ocpiAllowedHeaders: ["x-trace-id"],
+});
+```
 
-  <Tab title="Node">
-    Intervals are **milliseconds**. The buffer is capped **by message count**, so worst-case memory is roughly `bufferCapacity × maxCaptureBytes`.
-
-    ```ts
-    OCPIClient.start({
-      endpoint: "https://ingest.evpanda.io",
-      bufferCapacity: 50_000,
-      flushInterval: 2_000,
-      debug: true,
-      logger: pino({ name: "evpanda" }),
-      ocpiAllowedHeaders: ["x-trace-id"],
-    });
-    ```
-
-    `debug` is a master switch — with it off, the SDK is completely silent, including about config errors. The logger interface is four methods (`debug`, `info`, `warn`, `error`), so pino, winston, bunyan, and `console` all satisfy it.
-  </Tab>
-
-  <Tab title="Python">
-    Intervals are float **seconds**, matching `time.sleep` and socket timeouts. The buffer is capped **by message count**.
-
-    ```python
-    OCPIClient.start(
-        OCPIConfig(
-            endpoint="https://ingest.evpanda.io",
-            buffer_capacity=50_000,
-            flush_interval=2.0,
-            debug=True,
-            logger=logging.getLogger("evpanda"),
-            ocpi_allowed_headers=["x-trace-id"],
-        )
+```python Python
+panda = evpanda.start_ocpi(
+    evpanda.OCPIConfig(
+        max_buffer_bytes=64 << 20,
+        flush_interval=2.0,
+        log_mode="debug",
+        ocpi_allowed_headers=["x-trace-id"],
     )
-    ```
-
-    `debug` is a master switch — with it off, the SDK is completely silent. With `logger=None` it uses `logging.getLogger("evpanda")`.
-  </Tab>
-</Tabs>
+)
+```
+</CodeGroup>
 
 ### Sizing the buffer
 
-The buffer absorbs a delivery stall. Size it for how long you want to survive one: `message rate × average size × seconds`.
+`maxBufferBytes` caps everything waiting to be delivered. That is the number to provision against; the SDK evicts rather than exceed it.
 
-At 400 messages/second and 500 bytes each — roughly a 10,000-charger CSMS — one minute of stalled delivery is about 12 MB. The 32 MiB Go default covers about two and a half minutes of that: enough for a blip, small enough for an ordinary container limit.
+Size it for the stall you want to survive: message rate times average size times seconds. At 400 messages per second and 500 bytes each, roughly a 10,000 charger CSMS, one minute of stalled delivery is about 12 MB. The 32 MiB default covers about two and a half minutes.
 
-<Warning>
-  Don't set the buffer ceiling below the per-capture cap. A full-size capture could then never fit, so every large message would be dropped after being redacted.
-</Warning>
+The HTTP adapters add a second, smaller cost. While a request is in flight they hold a copy of its bodies, bounded per request by `maxCaptureBytes` and released as soon as the exchange is captured. That scales with concurrency rather than with the buffer. Calling the capture methods yourself avoids it, since you already hold the bytes.
 
 ## How delivery works
 
-```mermaid
-flowchart LR
-    A["capture()"] --> B{"identity valid?"}
-    B -->|no| X1["dropped · invalid"]
-    B -->|yes| C{"within size cap?"}
-    C -->|no| X2["dropped · oversize"]
-    C -->|yes| D["redact"]
-    D --> E["ring buffer"]
-    E -->|full| X3["evict oldest"]
-    E --> F["batch of 1000<br/>or flush interval"]
-    F --> G["compress · POST"]
-    G -->|retries exhausted| X4["dropped · undeliverable"]
-    G -->|200| H["delivered"]
-```
-
-One background worker per client owns delivery. It flushes when 1,000 messages are waiting or the flush interval elapses, whichever comes first, compresses the batch, and POSTs it to `https://ingest.evpanda.io`.
+One background worker per client. It flushes when 1,000 messages are waiting or the flush interval elapses, whichever comes first, compresses the batch, and posts it.
 
 | Response | Treated as |
 | --- | --- |
 | `200` | Delivered |
-| `400`, `401`, `413` | **Permanent** — dropped immediately, never retried |
-| `5xx`, network error, timeout | Retried with jittered exponential backoff, five attempts |
+| `400`, `401`, `413` | Permanent. Dropped immediately, never retried |
+| `5xx`, network error, timeout | Retried with jittered backoff, five attempts, 500ms up to 30s |
 
-Retries are deliberately not configurable: an SDK on a customer's hot path that retries aggressively against a struggling API turns a partial outage into a full one.
+Retries are not configurable. An SDK on a customer hot path that retries aggressively against a struggling API turns a partial outage into a full one.
 
-### Where data can be lost
+Under sustained failure the buffer fills and the SDK evicts its own oldest captures. It never applies backpressure to your service.
 
-Five places, all counted:
+## Is it working?
 
-| Counter | Cause |
-| --- | --- |
-| `DroppedInvalid` | Identity failed validation |
-| `DroppedOversize` | Body or frame over the per-capture cap |
-| `DroppedEvicted` | Buffer full, oldest evicted |
-| `DroppedUndeliverable` | Retries exhausted, or a permanent rejection |
-| `DroppedPanic` | A recovered panic inside the SDK — a bug, please report it |
-
-## Shut down cleanly
-
-Stop accepting traffic first, then drain. Draining while chargers or partners are still sending is a race you'll lose.
+`stats()` is a snapshot of the client's delivery counters. It is always available, including on an inert or closed client, and each counter maps to one root cause.
 
 <CodeGroup>
-  ```go Go
-  srv.Shutdown(ctx)                  // stop accepting…
-  if err := panda.Shutdown(ctx); err != nil {
-      log.Printf("evpanda: %v", err) // …then drain
-  }
-  ```
+```go Go
+s := panda.Stats()
+// {Captured:40120 DroppedInvalid:0 DroppedOversize:0 DroppedEvicted:9402
+//  DroppedUndeliverable:0 DroppedFault:0 BufferedMessages:2 BufferBytes:528}
+```
 
-  ```ts Node
-  server.close();
-  await panda.close();
-  ```
+```ts Node
+const s = panda.stats();
+// { captured: 40120, droppedInvalid: 0, droppedOversize: 0, droppedEvicted: 9402,
+//   droppedUndeliverable: 0, droppedFault: 0, bufferedMessages: 2, bufferBytes: 528 }
+```
 
-  ```python Python
-  server.shutdown()
-  panda.close()
-  ```
+```python Python
+s = panda.stats()
+# Stats(captured=40120, dropped_invalid=0, dropped_oversize=0, dropped_evicted=9402,
+#       dropped_undeliverable=0, dropped_fault=0, buffered_messages=2, buffer_bytes=528)
+```
 </CodeGroup>
 
-Close is idempotent, and captures made after it are safe no-ops.
+| Counter | What a high value means |
+| --- | --- |
+| `captured` is 0 | The capture path is not wired in, or the client is inert |
+| `droppedInvalid` | Identity resolution is failing |
+| `droppedOversize` | Bodies exceed `maxCaptureBytes` |
+| `droppedEvicted` | Upstream cannot keep up, or the buffer is undersized |
+| `droppedUndeliverable` | Network, API key, or ingestion fault |
+| `droppedFault` | A bug in the SDK. Please report it |
 
-<Warning>
-  **Node:** `close()` returns a promise. Not awaiting it is the difference between draining the buffer and discarding it.
+It is a pull based snapshot, so it feeds Prometheus, OpenTelemetry, or a log line without the SDK depending on any of them.
 
-  **Go:** `Shutdown(ctx)` uses your context's deadline; `Close()` uses the configured `DrainTimeout`. Both return `ErrDrainIncomplete` if the deadline passed with messages still buffered.
+```go
+prometheus.MustRegister(prometheus.NewCounterFunc(opts, func() float64 {
+    return float64(panda.Stats().DroppedEvicted)
+}))
+```
 
-  **Python:** `close()` blocks while it drains, up to `drain_timeout`. Call it from your shutdown path, not from a request handler.
-</Warning>
+### Logging
 
-`flush()` forces an immediate delivery and waits for it — useful in tests and at shutdown, never on a request path.
+The SDK reports problems to your logger by default, at a bounded rate: at most one summary line per minute, and nothing at all while healthy.
 
-## Check that it's working
+```
+evpanda: captures dropped window=60s captured=12 invalid_identity=148302 buffered=0 buffer_bytes=0
+```
+
+| Mode | Output |
+| --- | --- |
+| `silent` | Nothing. Counters still work |
+| `errors` | Default. Config problems at startup, plus the per minute summary |
+| `debug` | Adds per batch delivery failures and a summary on close |
+
+Set `logMode` in config, or `EVPANDA_LOG=silent|errors|debug` in the environment to change it without a code change. Config wins over the environment.
+
+### Verifying an integration
 
 <Steps>
-  <Step title="Confirm the client is live, not inert">
-    In Go, the error from `Start*` is nil. In Node and Python, `debug` is on and no config error appeared at startup.
+  <Step title="Confirm the client is live">
+    No startup fault on the error or `.error`.
   </Step>
 
   <Step title="Drive real traffic">
-    Connect a charge point, or make one OCPI call in each direction. Synthetic traffic that skips your auth layer won't exercise identity resolution — the part that usually breaks.
+    Connect a charge point, or make one OCPI call in each direction. Synthetic traffic that skips your auth layer does not exercise identity resolution, which is the part that usually breaks.
   </Step>
 
   <Step title="Wait one flush interval">
     Five seconds by default, or call `flush()`.
   </Step>
 
-  <Step title="Check the dashboard">
-    Messages appear under your network. Chargers and platforms are created automatically the first time they send traffic, so a new entity appearing is itself confirmation.
+  <Step title="Read the counters">
+    `captured` climbing, drop counters flat.
   </Step>
 
   <Step title="Check both directions">
-    The step people skip. Confirm you see frames you sent as well as frames you received. Half-instrumented is the most common production state, and it silently disables the most valuable checks.
+    The step people skip. Confirm you see frames you sent as well as frames you received. Half instrumented is the most common production state, and it silently disables the checks that pair requests with responses.
   </Step>
 </Steps>
 
-### Counters and logs
+## Shutdown
 
-Go exposes the delivery counters directly, on any client — including an inert or closed one:
+Stop accepting traffic first, then drain.
 
-```go
-s := panda.Stats()
-log.Printf("evpanda: captured=%d invalid=%d oversize=%d evicted=%d undeliverable=%d buffered=%d",
-    s.Captured, s.DroppedInvalid, s.DroppedOversize,
-    s.DroppedEvicted, s.DroppedUndeliverable, s.BufferedMessages)
+<CodeGroup>
+```go Go
+srv.Shutdown(ctx)                  // stop accepting first
+if err := panda.Shutdown(ctx); err != nil {
+    log.Printf("evpanda: %v", err) // then drain what was captured
+}
 ```
 
-They are always on, so you can feed them straight into your metrics:
-
-```go
-prometheus.MustRegister(prometheus.NewCounterFunc(
-    prometheus.CounterOpts{Name: "evpanda_dropped_total"},
-    func() float64 { return float64(panda.Stats().TotalDropped()) },
-))
+```ts Node
+await server.close();
+if (!(await panda.close())) {
+  log.warn("evpanda: shut down with messages still buffered");
+}
 ```
 
-Go also logs by default, at a bounded rate — at most one summary line per minute, and nothing at all while healthy:
-
+```python Python
+server.shutdown()
+if not panda.close():
+    log.warning("evpanda: shut down with messages still buffered")
 ```
-level=WARN msg="evpanda: captures dropped" window=1m0s captured=12 invalid_identity=148302 buffered=0 buffer_bytes=0
-```
+</CodeGroup>
 
-<Note>
-  **Node and Python don't expose a counters API yet.** Turn on `debug` to get the same picture in your logs, and use the dashboard's message volume to confirm an integration is healthy.
-</Note>
+Close is idempotent, never raises, and captures after it are safe no-ops.
 
-### What to alert on
+- **Go.** `Shutdown(ctx)` uses your context deadline, `Close()` uses `DrainTimeout`. Both return `ErrDrainIncomplete` if the deadline passed with messages still buffered.
+- **Node.** `close(timeoutMs?)` resolves to whether it drained. The flush timer is `unref`'d, so it never holds your process open, which also means an unclosed client loses what it captured since the last flush.
+- **Python.** `close(timeout=None)` returns whether it drained. Clients are context managers, a client the host never closes is drained at interpreter exit, and a client inherited across `fork()` restarts its delivery thread in the child.
 
-| Alert | Condition |
-| --- | --- |
-| Capture stalled | `Captured` flat while your service is serving traffic |
-| Identity failures | `DroppedInvalid` rising — identity resolution regressed |
-| Delivery failing | `DroppedUndeliverable` rising — network, egress, or a revoked key |
-| Buffer pressure | Buffer sustained above half the ceiling; eviction is next |
-
-Alert on rates, not totals: the counters are monotonic since client start, so a total tells you something once went wrong while a rate tells you it is going wrong now.
+`flush()` forces an immediate delivery and waits for it. It blocks for as long as the transport retries take, so use it at shutdown or while debugging, never on a request path.
 
 ## Troubleshooting
 
 <AccordionGroup>
-  <Accordion title="Nothing arrives, and Captured is 0" icon="power-off">
-    Either the client is inert or the capture calls aren't running.
+  <Accordion title="Nothing arrives and captured is 0">
+    Either the client is inert or the capture calls are not running.
 
-    Check the startup error (Go) or turn on `debug` (Node, Python). Confirm `EVPANDA_API_KEY` is set in the environment your service actually runs in — set in your shell, absent from the container is the classic miss — and that `endpoint` is `https://ingest.evpanda.io` with no path.
+    Check the startup fault. Confirm `EVPANDA_API_KEY` is set in the environment your service actually runs in; set in your shell but absent from the container is the classic miss.
   </Accordion>
 
-  <Accordion title="Nothing arrives, and DroppedInvalid is climbing" icon="fingerprint">
-    Identity resolution is failing. This is the most common integration fault by a wide margin.
+  <Accordion title="Nothing arrives and droppedInvalid is climbing">
+    Identity resolution is failing. This is the most common integration fault.
 
-    For OCPI, the usual cause is a capture adapter mounted **before** the middleware that authenticates the partner, so nothing has an identity yet. Move capture after auth. See [Identity](/concepts/identity).
+    For OCPI, check that something is actually stamping the partner: `setIdentity` on the request, `use_identity` around the call, the context, or a resolver. See [Identity](/concepts/identity).
   </Accordion>
 
-  <Accordion title="Nothing arrives, and DroppedUndeliverable is climbing" icon="cloud-off">
-    Capture works, delivery doesn't. Check egress first:
+  <Accordion title="Nothing arrives and droppedUndeliverable is climbing">
+    Capture works, delivery does not. Check egress:
 
     ```bash
     curl -sS https://ingest.evpanda.io/health
     # {"status":"ok"}
     ```
 
-    If that fails, allowlist `ingest.evpanda.io` on port 443. If it succeeds, suspect the key: a revoked or wrong-protocol key returns `401`, which is permanent and never retried. An OCPP client needs a charger network's key; an OCPI client needs a roaming network's key.
+    If that fails, allowlist `ingest.evpanda.io` on port 443. If it succeeds, suspect the key: a revoked or wrong protocol key returns `401`, which is permanent and never retried. An OCPP client needs a charger network key, an OCPI client a roaming network key.
   </Accordion>
 
-  <Accordion title="Messages deliver but don't show up" icon="file-x">
-    The ingestion API validates each message independently and reports `{"captured": N, "failed": M}`. Messages counted in `failed` were rejected after a successful delivery.
+  <Accordion title="Messages deliver but do not show up">
+    The ingestion API validates each message independently and drops what fails, after returning success. The usual causes, in order:
 
-    Usual causes, in order:
-
-    - **An OCPP message with no tenant pair.** The API currently requires `tenant_id` and `tenant_name` on OCPP messages even though the SDKs treat them as optional.
-    - **An OCPI exchange with no status code.** It must be between 100 and 599; there is no null form.
-    - **An identity field over its limit.** Tenant name is 32 characters; the rest are 64.
-
-    See [Identity](/concepts/identity#tenants).
+    1. An OCPP message with no tenant pair. The API requires it even though the SDKs treat it as optional.
+    2. An OCPI exchange with no status code. It must be 100 to 599.
+    3. An identity field over its limit. Tenant name is 32 characters, the rest are 64.
   </Accordion>
 
-  <Accordion title="Only half the traffic appears" icon="arrow-down">
-    You are capturing one direction. For OCPP, that means the write path isn't instrumented; for OCPI, that the outbound HTTP client isn't wrapped.
-
-    It matters more than it looks: without both directions the validation engine can't pair requests with responses, so you lose every timeout, orphan, and duplicate-ID finding.
+  <Accordion title="droppedOversize is high">
+    A body or frame over `maxCaptureBytes`, 64 KiB by default, drops the whole message. Raise the cap; 256 KiB is reasonable for a roaming server carrying large location or CDR payloads. Raise the buffer ceiling with it.
   </Accordion>
 
-  <Accordion title="Bodies are missing or truncated" icon="ruler">
-    A body or frame over `maxCaptureBytes` (64 KiB by default) drops the **whole message** rather than storing a truncated one. Raise the cap — 256 KiB is reasonable for a roaming server — and raise the buffer ceiling with it.
-  </Accordion>
-
-  <Accordion title="Memory grew after adding the SDK" icon="database">
-    Expected and bounded: the buffer holds undelivered captures up to its ceiling. If that's more than your pod can afford, lower the ceiling. A healthy client idles far below it.
+  <Accordion title="Memory grew after adding the SDK">
+    Expected and bounded. The buffer holds undelivered captures up to `maxBufferBytes`. If that is more than your pod can afford, lower it. A healthy client idles far below its ceiling.
   </Accordion>
 </AccordionGroup>
 
-Still stuck? Mail [support@evpanda.io](mailto:support@evpanda.io) with the SDK and version, the network name and protocol, and a counter snapshot or debug log covering a minute of live traffic.
-
-## No SDK for your language?
-
-The ingestion API is a small HTTP contract: two routes, one auth header, one response shape.
-
-```bash
-curl -sS https://ingest.evpanda.io/v1/ocpp \
-  -H "X-API-Key: $EVPANDA_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[ ... ]}'
-# {"captured":1,"failed":0}
-```
-
-`POST /v1/ocpp` and `POST /v1/ocpi` each take up to 1,000 messages per batch, optionally gzip- or zstd-compressed, capped at 5 MB compressed and 20 MB decompressed. Mail [support@evpanda.io](mailto:support@evpanda.io) for the full message schemas.
-
-If you implement your own client, copy the behaviors that make an SDK safe on a hot path: never block the caller, bound your memory, batch, retry only `5xx` and network errors, redact before you buffer, and count what you drop.
+Still stuck? Mail [support@evpanda.io](mailto:support@evpanda.io) with the SDK and version, the network name and protocol, and a counter snapshot covering a minute of live traffic.
 
 ## Next
 
 <Columns cols={2}>
   <Card title="OCPP server" icon="plug-zap" href="/integration/ocpp">
-    The full integration, step by step, in Go, Node, and Python.
+    The full integration in Go, Node, and Python.
   </Card>
 
   <Card title="OCPI server" icon="network" href="/integration/ocpi">
-    The same, plus the drop-in HTTP adapters.
+    The same, plus the HTTP adapters.
   </Card>
 </Columns>

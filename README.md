@@ -8,7 +8,7 @@ Built with [Mintlify](https://mintlify.com). Pages are MDX; site configuration l
 
 | Path | Contents |
 | --- | --- |
-| `index.mdx` | Introduction — what EVPanda is, how it works, and what issues are |
+| `index.mdx` | Introduction: what EVPanda is, how it works, and what issues are |
 | `concepts/` | Networks and API keys, identity, what gets captured |
 | `integration/` | Getting started, plus one end-to-end guide per protocol |
 | `style.css` | Custom CSS, auto-included by Mintlify on every page |
@@ -37,8 +37,8 @@ Merges to `master` deploy automatically through the Mintlify GitHub app.
 
 ## Related repositories
 
-- [`evpanda-go`](https://github.com/evpanda-labs/evpanda-go) — Go SDK, the reference implementation
-- [`evpanda-node`](https://github.com/evpanda-labs/evpanda-node) — Node SDK
-- [`evpanda-py`](https://github.com/evpanda-labs/evpanda-py) — Python SDK
+- [`evpanda-go`](https://github.com/evpanda-labs/evpanda-go): Go SDK, the reference implementation
+- [`evpanda-node`](https://github.com/evpanda-labs/evpanda-node): Node SDK
+- [`evpanda-py`](https://github.com/evpanda-labs/evpanda-py): Python SDK
 
 Documentation must match shipped code. See `AGENTS.md` for the sources of truth and the house style.

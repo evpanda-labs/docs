@@ -9,7 +9,8 @@
     "dark": "#6366F1"
   },
   "appearance": {
-    "default": "dark"
+    "default": "dark",
+    "strict": true
   },
   "icons": {
     "library": "lucide"
