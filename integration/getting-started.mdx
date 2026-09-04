@@ -43,7 +43,7 @@ Optional extras, needed only for the adapter you use:
 
 <CodeGroup>
 ```bash Go
-# none: the ocpi adapters are stdlib only
+# none: the OCPI adapters are stdlib only
 ```
 
 ```bash Node
@@ -252,7 +252,7 @@ s = panda.stats()
 ```
 </CodeGroup>
 
-| Counter | What a high value means |
+| Counter | What it tells you |
 | --- | --- |
 | `captured` is 0 | The capture path is not wired in, or the client is inert |
 | `droppedInvalid` | Identity resolution is failing |
@@ -284,30 +284,6 @@ evpanda: captures dropped window=60s captured=12 invalid_identity=148302 buffere
 | `debug` | Adds per batch delivery failures and a summary on close |
 
 Set `logMode` in config, or `EVPANDA_LOG=silent|errors|debug` in the environment to change it without a code change. Config wins over the environment.
-
-### Verifying an integration
-
-<Steps>
-  <Step title="Confirm the client is live">
-    No startup fault on the error or `.error`.
-  </Step>
-
-  <Step title="Drive real traffic">
-    Connect a charge point, or make one OCPI call in each direction. Synthetic traffic that skips your auth layer does not exercise identity resolution, which is the part that usually breaks.
-  </Step>
-
-  <Step title="Wait one flush interval">
-    Five seconds by default, or call `flush()`.
-  </Step>
-
-  <Step title="Read the counters">
-    `captured` climbing, drop counters flat.
-  </Step>
-
-  <Step title="Check both directions">
-    The step people skip. Confirm you see frames you sent as well as frames you received. Half instrumented is the most common production state, and it silently disables the checks that pair requests with responses.
-  </Step>
-</Steps>
 
 ## Shutdown
 
