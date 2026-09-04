@@ -1,7 +1,6 @@
 ---
 title: "EVPanda documentation"
 sidebarTitle: "Introduction"
-description: "Observability for EV charging networks. Capture every OCPP and OCPI message, catch protocol violations, and trace failures to their source."
 ---
 
 EVPanda records the protocol traffic your systems already exchange, validates it, and gives your team one place to search it.
@@ -14,7 +13,7 @@ You embed an SDK in your OCPP CSMS or OCPI server. It captures messages, buffers
   </Card>
 
   <Card title="Core concepts" icon="shapes" href="/concepts/networks" horizontal>
-    Networks, identity, and what gets captured.
+    Networks, identity, and data flow.
   </Card>
 </Columns>
 
@@ -38,15 +37,6 @@ SDKs ship for Go, Node, and Python.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    A["Your CSMS / OCPI server<br/>+ EVPanda SDK"] -->|"batched HTTPS"| B["Ingestion API"]
-    B --> C[("Message store")]
-    C --> D["Validation engine"]
-    D --> C
-    C --> E["Dashboard"]
-```
-
 1. **The SDK captures.** Each call validates the identity, caps the payload size, strips secrets, buffers the message, and returns. No network call runs on your thread.
 2. **The SDK delivers.** One background worker flushes when 1,000 messages are waiting or the flush interval elapses, compresses the batch with zstd, and posts it. Failures retry with capped backoff.
 3. **The ingestion API accepts.** It authenticates the batch, validates each message independently, and stores the valid ones.
@@ -65,21 +55,6 @@ Each group carries a severity, the charger or platform it affects, a 7 day trend
 | `warning` | Legal but questionable: a missing optional field, a value that looks wrong |
 | `anomaly` | Nothing breaks a rule, but the behavior around it does |
 
-Examples of what gets caught:
-
-| Finding | Protocol | Why it matters |
-| --- | --- | --- |
-| `call_response_timeout` | OCPP | You sent a `CALL` and the charge point never answered |
-| `unanswered_call_on_disconnect` | OCPP | The socket dropped with calls outstanding |
-| `duplicate_unique_id` | OCPP | Two in-flight calls reused one message ID |
-| `known_endpoint` | OCPI | The request targets a path that is not part of OCPI 2.2.1 |
-| `ocpi_envelope` | OCPI | The response body is not a valid OCPI envelope |
-| `required_field` | Both | A required field is missing from the payload |
-
-## Tags and search
-
-The validation pipeline extracts tags from each message: session IDs, location IDs, transaction IDs, token IDs, pulled from the URL, headers, body, or connection. Paste one into search and you get every message across both protocols that touched it.
-
 ## Next
 
 <Columns cols={2}>
@@ -91,7 +66,7 @@ The validation pipeline extracts tags from each message: session IDs, location I
     How messages are attributed to a charger or partner.
   </Card>
 
-  <Card title="What gets captured" icon="scan-line" href="/concepts/capture-model">
+  <Card title="Data flow" icon="scan-line" href="/concepts/capture-model">
     Event shapes, redaction, and limits.
   </Card>
 

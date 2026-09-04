@@ -9,7 +9,7 @@ Built with [Mintlify](https://mintlify.com). Pages are MDX; site configuration l
 | Path | Contents |
 | --- | --- |
 | `index.mdx` | Introduction: what EVPanda is, how it works, and what issues are |
-| `concepts/` | Networks and API keys, identity, what gets captured |
+| `concepts/` | Networks and API keys, identity, data flow |
 | `integration/` | Getting started, plus one end-to-end guide per protocol |
 | `style.css` | Custom CSS, auto-included by Mintlify on every page |
 

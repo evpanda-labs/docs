@@ -43,7 +43,7 @@ Do not write a snippet from memory. Read the SDK source or its README first.
 index.mdx                        Introduction: what EVPanda is, how it works, issues
 concepts/networks.mdx            Networks and API keys
 concepts/identity.mdx            Per-message identity and tenants
-concepts/capture-model.mdx       What gets captured, redaction, limits, retention
+concepts/capture-model.mdx       Data flow, redaction, limits, retention
 integration/getting-started.mdx  Shared SDK surface: install, config, delivery, monitoring, troubleshooting
 integration/ocpp.mdx             OCPP CSMS integration, end to end
 integration/ocpi.mdx             OCPI server integration, end to end
